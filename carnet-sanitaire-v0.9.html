@@ -1,0 +1,3149 @@
+<!DOCTYPE html>
+<!--
+  Carnet sanitaire — v0.9
+  Outil de suivi de cheptel et carnet sanitaire pour éleveurs bovins.
+  Données stockées en local + sauvegarde optionnelle Google Drive.
+
+  Historique :
+    v0.9 — Tri intelligent des races (cheptel + croisée en haut),
+           sélection père dans la liste des mâles ≥ 8 mois,
+           édition du nom et suppression d'animal depuis la fiche détail.
+    v0.8 — Ajout manuel d'animaux (formulaire 2 étapes : identification + filiation),
+           toolbar épurée avec menu ⋮ pour les actions de données,
+           seuil "veau" passé de 12 à 8 mois.
+    v0.7 — Token persisté en localStorage (contournement COOP GitHub Pages) +
+           suppression de la requête silencieuse Google condamnée par la politique
+           Cross-Origin-Opener-Policy. Reconnexion auto pendant ~1h après chaque popup.
+    v0.6 — Reconnexion silencieuse au démarrage + cache token sessionStorage
+    v0.5 — Fix popup OAuth bloquée par le navigateur : reconnexion via bouton explicite
+    v0.4 — Robustesse OAuth : retry interactif sur interaction_required + 401
+    v0.3 — Réconciliation à la connexion : protection anti-écrasement
+    v0.2 — Sauvegarde sur perte de focus + indicateur "modifs en attente"
+    v0.1 — Sauvegarde Google Drive (debounce 30s)
+    v0.0 — Sprint 1 : import CSV Synel, liste, recherche, sauvegarde locale
+-->
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#3d2817">
+<title>Carnet sanitaire 0.9</title>
+<style>
+  /* ============================================================
+     Carnet sanitaire — prototype Sprint 1
+     Direction : utilitaire propre, palette terre/papier
+     ============================================================ */
+  :root {
+    --paper: #f5f1e8;
+    --paper-2: #ebe4d3;
+    --ink: #2a1f12;
+    --ink-2: #5a4a35;
+    --ink-3: #8a7a60;
+    --terre: #6b3e1f;
+    --terre-2: #8a5a3a;
+    --vert: #4a6b1f;
+    --vert-2: #6b8a3a;
+    --rouge: #8b2a2a;
+    --jaune: #b8830a;
+    --bleu: #2a5a7a;
+    --line: #c8bfa8;
+    --line-2: #d8d0bc;
+    --shadow: 0 1px 0 rgba(58, 40, 23, 0.08);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+    font-size: 16px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+
+  body {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* Header */
+  header {
+    background: var(--ink);
+    color: var(--paper);
+    padding: 14px 18px;
+    padding-top: calc(14px + env(safe-area-inset-top));
+    border-bottom: 3px double var(--terre);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 {
+    font-size: 18px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    font-variant: small-caps;
+  }
+  header .sub {
+    font-size: 12px;
+    color: var(--paper-2);
+    opacity: 0.75;
+    margin-top: 2px;
+  }
+
+  /* Main */
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 16px;
+  }
+
+  /* Toolbar */
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 16px;
+    padding: 12px;
+    background: var(--paper-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  .toolbar input[type="search"] {
+    flex: 1;
+    min-width: 180px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    background: var(--paper);
+    color: var(--ink);
+    font-family: inherit;
+    font-size: 16px;
+    border-radius: 3px;
+  }
+  .toolbar input[type="search"]:focus {
+    outline: 2px solid var(--terre);
+    outline-offset: -1px;
+  }
+
+  .filters {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  /* Buttons */
+  button, label.btn {
+    font-family: inherit;
+    font-size: 14px;
+    padding: 9px 14px;
+    border: 1px solid var(--line);
+    background: var(--paper);
+    color: var(--ink);
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    box-shadow: var(--shadow);
+    user-select: none;
+    white-space: nowrap;
+  }
+  button:hover, label.btn:hover { background: var(--paper-2); border-color: var(--ink-3); }
+  button:active { transform: translateY(1px); }
+  button.primary {
+    background: var(--terre);
+    color: var(--paper);
+    border-color: var(--terre);
+  }
+  button.primary:hover { background: var(--terre-2); border-color: var(--terre-2); }
+  button.ghost {
+    background: transparent;
+    border-color: var(--line);
+  }
+  button.toggle[aria-pressed="true"] {
+    background: var(--ink);
+    color: var(--paper);
+    border-color: var(--ink);
+  }
+  button.danger { color: var(--rouge); }
+
+  /* Stats */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .stat {
+    background: var(--paper-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 10px 12px;
+  }
+  .stat .v {
+    font-size: 24px;
+    font-weight: 500;
+    color: var(--ink);
+    font-feature-settings: 'tnum';
+  }
+  .stat .l {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-3);
+    margin-top: 2px;
+  }
+
+  /* Table desktop */
+  .table-wrap {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  thead th {
+    background: var(--paper-2);
+    text-align: left;
+    padding: 10px 12px;
+    font-weight: 500;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+    border-bottom: 2px solid var(--line);
+    cursor: pointer;
+    user-select: none;
+    position: sticky;
+    top: 0;
+  }
+  thead th:hover { background: var(--line-2); }
+  thead th.sort-asc::after { content: ' ▲'; opacity: 0.5; }
+  thead th.sort-desc::after { content: ' ▼'; opacity: 0.5; }
+  tbody tr {
+    border-bottom: 1px solid var(--line-2);
+    cursor: pointer;
+  }
+  tbody tr:hover { background: var(--paper-2); }
+  tbody tr.sortie { color: var(--ink-3); font-style: italic; }
+  tbody td {
+    padding: 10px 12px;
+    font-feature-settings: 'tnum';
+  }
+  td.num-trav { font-weight: 500; color: var(--terre); }
+  td.nom { font-weight: 500; }
+  .badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border: 1px solid;
+  }
+  .badge.f { background: rgba(184, 131, 10, 0.1); color: var(--jaune); border-color: rgba(184, 131, 10, 0.3); }
+  .badge.m { background: rgba(42, 90, 122, 0.1); color: var(--bleu); border-color: rgba(42, 90, 122, 0.3); }
+  .badge.race { background: var(--paper-2); color: var(--ink-2); border-color: var(--line); }
+
+  /* Empty state */
+  .empty {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--ink-3);
+  }
+  .empty h2 {
+    font-size: 22px;
+    color: var(--ink);
+    margin-bottom: 8px;
+    font-weight: 500;
+  }
+  .empty p { margin-bottom: 20px; max-width: 460px; margin-left: auto; margin-right: auto; }
+  .empty .actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+
+  /* Mobile cards */
+  .cards { display: none; flex-direction: column; gap: 8px; }
+  .card {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 12px 14px;
+    box-shadow: var(--shadow);
+    cursor: pointer;
+  }
+  .card.sortie { opacity: 0.65; }
+  .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .card-head .nom { font-size: 17px; font-weight: 500; }
+  .card-head .ntrav { font-size: 13px; color: var(--terre); font-weight: 500; }
+  .card-meta { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; font-size: 13px; color: var(--ink-2); }
+  .card-meta .sep { color: var(--line); }
+  .card-num { font-size: 11px; color: var(--ink-3); margin-top: 4px; font-feature-settings: 'tnum'; }
+
+  /* Modal détail */
+  .modal-bg {
+    position: fixed; inset: 0;
+    background: rgba(42, 31, 18, 0.5);
+    z-index: 100;
+    display: none;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 20px;
+    overflow-y: auto;
+  }
+  .modal-bg.show { display: flex; }
+  .modal {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    max-width: 560px;
+    width: 100%;
+    margin: 20px 0;
+    box-shadow: 0 10px 40px rgba(42, 31, 18, 0.3);
+  }
+  .modal-head {
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .modal-head h2 { font-size: 22px; font-weight: 500; }
+  .modal-head .close {
+    background: transparent;
+    border: none;
+    font-size: 24px;
+    color: var(--ink-2);
+    cursor: pointer;
+    padding: 4px 10px;
+    box-shadow: none;
+  }
+  .modal-body { padding: 18px 20px; }
+  .field {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line-2);
+    font-size: 14px;
+  }
+  .field:last-child { border-bottom: none; }
+  .field .l {
+    color: var(--ink-3);
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    padding-top: 2px;
+  }
+  .field .v { font-feature-settings: 'tnum'; }
+  .section-title {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--terre);
+    margin: 16px 0 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--terre);
+  }
+  .section-title:first-child { margin-top: 0; }
+
+  /* Toast */
+  .toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--ink);
+    color: var(--paper);
+    padding: 12px 20px;
+    border-radius: 3px;
+    font-size: 14px;
+    box-shadow: 0 4px 16px rgba(42, 31, 18, 0.3);
+    z-index: 200;
+    opacity: 0;
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: none;
+    max-width: calc(100vw - 40px);
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
+  .toast.error { background: var(--rouge); }
+  .toast.success { background: var(--vert); }
+
+  /* Cloud status bar */
+  .cloud-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    flex-wrap: wrap;
+  }
+  .cloud-bar.disconnected {
+    background: rgba(184, 131, 10, 0.08);
+    border-color: rgba(184, 131, 10, 0.3);
+  }
+  .cloud-bar.connected { background: rgba(74, 107, 31, 0.06); border-color: rgba(74, 107, 31, 0.25); }
+  .cloud-bar.error { background: rgba(139, 42, 42, 0.06); border-color: rgba(139, 42, 42, 0.3); }
+  .cloud-bar .icon {
+    width: 22px; height: 22px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    color: var(--paper);
+    font-size: 13px; font-weight: 700;
+    flex-shrink: 0;
+  }
+  .cloud-bar.disconnected .icon { background: var(--jaune); }
+  .cloud-bar.connected .icon { background: var(--vert); }
+  .cloud-bar.error .icon { background: var(--rouge); }
+  .cloud-bar .label {
+    flex: 1;
+    color: var(--ink-2);
+    min-width: 140px;
+  }
+  .cloud-bar .label strong { color: var(--ink); font-weight: 500; }
+  .cloud-bar .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .cloud-bar button { font-size: 13px; padding: 6px 10px; }
+  .cloud-bar .syncing {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid var(--line);
+    border-top-color: var(--terre);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin-right: 6px;
+    vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Modal config cloud */
+  .config-modal { max-width: 480px; }
+  .config-modal .modal-body { padding: 20px; }
+  .config-modal h3 {
+    font-size: 14px;
+    margin-bottom: 8px;
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .config-modal p {
+    font-size: 13px;
+    color: var(--ink-2);
+    margin-bottom: 14px;
+    line-height: 1.5;
+  }
+  .config-modal .provider-card {
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 14px;
+    margin-bottom: 10px;
+    background: var(--paper);
+  }
+  .config-modal .provider-card.unavailable {
+    opacity: 0.5;
+    background: var(--paper-2);
+  }
+  .config-modal .provider-card .head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+  .config-modal .provider-card .name {
+    font-size: 15px;
+    font-weight: 500;
+  }
+  .config-modal .provider-card .desc {
+    font-size: 12px;
+    color: var(--ink-3);
+  }
+  .config-modal .info {
+    background: var(--paper-2);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--terre);
+    padding: 10px 12px;
+    margin-top: 14px;
+    font-size: 12px;
+    color: var(--ink-2);
+    border-radius: 0 3px 3px 0;
+  }
+
+  /* Liste sauvegardes Drive */
+  .backup-list { list-style: none; }
+  .backup-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    margin-bottom: 6px;
+    background: var(--paper);
+    cursor: pointer;
+    gap: 10px;
+  }
+  .backup-item:hover { background: var(--paper-2); border-color: var(--terre-2); }
+  .backup-item .meta { flex: 1; min-width: 0; }
+  .backup-item .name {
+    font-weight: 500;
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .backup-item .date {
+    font-size: 12px;
+    color: var(--ink-3);
+    margin-top: 2px;
+  }
+  .backup-item .size {
+    font-size: 11px;
+    color: var(--ink-3);
+    font-feature-settings: 'tnum';
+  }
+  .backup-item .tag {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background: var(--terre);
+    color: var(--paper);
+    padding: 2px 6px;
+    border-radius: 2px;
+  }
+
+  /* File input hidden */
+  input[type="file"] { display: none; }
+
+  /* Menu déroulant ⋮ */
+  .menu-wrap { position: relative; }
+  .menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    box-shadow: 0 6px 20px rgba(42, 31, 18, 0.15);
+    min-width: 240px;
+    z-index: 50;
+    padding: 6px 0;
+  }
+  .menu-section {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-3);
+    padding: 6px 14px 4px;
+    font-weight: 500;
+  }
+  .menu-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 9px 14px;
+    border: none;
+    background: transparent;
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--ink);
+    cursor: pointer;
+    box-shadow: none;
+    border-radius: 0;
+    white-space: nowrap;
+  }
+  .menu-item:hover { background: var(--paper-2); }
+  .menu-item.danger { color: var(--rouge); }
+  .menu-item.danger:hover { background: rgba(139, 42, 42, 0.08); }
+  .menu-divider {
+    height: 1px;
+    background: var(--line-2);
+    margin: 4px 0;
+  }
+
+  /* Formulaire d'ajout */
+  .form-step {
+    display: none;
+  }
+  .form-step.active { display: block; }
+  .form-row {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .form-row label.lbl {
+    font-size: 13px;
+    color: var(--ink-2);
+    font-weight: 500;
+  }
+  .form-row label.lbl.req::after {
+    content: ' *';
+    color: var(--rouge);
+  }
+  .form-row input[type="text"],
+  .form-row input[type="date"],
+  .form-row input[type="number"],
+  .form-row select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    background: var(--paper);
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--ink);
+    border-radius: 3px;
+  }
+  .form-row input:focus,
+  .form-row select:focus {
+    outline: 2px solid var(--terre);
+    outline-offset: -1px;
+  }
+  .form-row input[aria-invalid="true"] {
+    border-color: var(--rouge);
+  }
+  .form-error {
+    font-size: 12px;
+    color: var(--rouge);
+    margin-top: -8px;
+    margin-bottom: 12px;
+    padding-left: 150px;
+  }
+  .form-help {
+    font-size: 11px;
+    color: var(--ink-3);
+    margin-top: 2px;
+    grid-column: 2;
+  }
+  .form-radio-group {
+    display: flex;
+    gap: 14px;
+  }
+  .form-radio-group label {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+  }
+  .form-actions {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+  }
+  .form-step-indicator {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-3);
+    margin-bottom: 14px;
+  }
+  .form-step-indicator strong {
+    color: var(--terre);
+    font-weight: 500;
+  }
+  .form-section-title {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--terre);
+    margin: 0 0 14px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--terre);
+  }
+
+  @media (max-width: 600px) {
+    .form-row {
+      grid-template-columns: 1fr;
+      gap: 4px;
+    }
+    .form-error, .form-help {
+      grid-column: 1;
+      padding-left: 0;
+    }
+  }
+
+  /* Responsive */
+  @media (max-width: 720px) {
+    .table-wrap { display: none; }
+    .cards { display: flex; }
+    .toolbar { padding: 10px; }
+    .field { grid-template-columns: 110px 1fr; gap: 8px; font-size: 13px; }
+    main { padding: 12px; }
+  }
+
+  /* Réduction du mouvement */
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Carnet sanitaire <span style="font-size:12px; opacity:0.6; font-variant:normal; letter-spacing:0; margin-left:6px">v0.9</span></h1>
+  <div class="sub" id="header-sub">Sprint 1 — gestion du cheptel</div>
+</header>
+
+<main>
+  <!-- Toolbar -->
+  <div class="toolbar" role="toolbar" aria-label="Actions">
+    <input type="search" id="search" placeholder="Rechercher (nom, n° national, n° travail)…" autocomplete="off">
+    <div class="filters">
+      <button class="toggle" id="filter-presents" aria-pressed="true">Présents</button>
+      <button class="toggle" id="filter-femelles" aria-pressed="false">♀ Femelles</button>
+      <button class="toggle" id="filter-males" aria-pressed="false">♂ Mâles</button>
+    </div>
+    <button id="add-animal" class="primary" title="Ajouter un animal manuellement">+ Ajouter</button>
+    <div class="menu-wrap">
+      <button id="data-menu-btn" class="ghost" title="Données et sauvegarde" aria-haspopup="true" aria-expanded="false">⋮</button>
+      <div class="menu" id="data-menu" hidden>
+        <div class="menu-section">Import / Export</div>
+        <label class="menu-item" for="import-file">⇪ Importer CSV Synel</label>
+        <input type="file" id="import-file" accept=".csv,text/csv">
+        <button class="menu-item" id="export-json">⇩ Sauvegarder en fichier</button>
+        <label class="menu-item" for="restore-file">↺ Restaurer depuis fichier</label>
+        <input type="file" id="restore-file" accept=".json,application/json">
+        <div class="menu-divider"></div>
+        <div class="menu-section">Zone dangereuse</div>
+        <button class="menu-item danger" id="reset">Vider la base locale</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cloud status bar -->
+  <div class="cloud-bar disconnected" id="cloud-bar">
+    <span class="icon" id="cloud-icon">!</span>
+    <div class="label" id="cloud-label">
+      <strong>Sauvegarde locale uniquement</strong> — aucune copie dans le cloud
+    </div>
+    <div class="actions">
+      <button id="cloud-config">Configurer le cloud</button>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats" id="stats" hidden>
+    <div class="stat"><div class="v" id="s-total">0</div><div class="l">Total cheptel</div></div>
+    <div class="stat"><div class="v" id="s-presents">0</div><div class="l">Présents</div></div>
+    <div class="stat"><div class="v" id="s-femelles">0</div><div class="l">Femelles</div></div>
+    <div class="stat"><div class="v" id="s-males">0</div><div class="l">Mâles</div></div>
+    <div class="stat"><div class="v" id="s-veaux">0</div><div class="l">Veaux &lt; 8 mois</div></div>
+  </div>
+
+  <!-- Empty state -->
+  <div class="empty" id="empty">
+    <h2>Aucun animal en base</h2>
+    <p>Importe un export CSV depuis Synel (format identification permanente) pour commencer. Tes données restent sur cet appareil — rien n'est envoyé ailleurs.</p>
+    <div class="actions">
+      <label class="btn primary" for="import-file" style="background:var(--terre);color:var(--paper);border-color:var(--terre)">⇪ Importer un CSV Synel</label>
+      <button id="load-demo" class="ghost">Charger des données de démo</button>
+    </div>
+  </div>
+
+  <!-- Table desktop -->
+  <div class="table-wrap" id="table-wrap" hidden>
+    <table>
+      <thead>
+        <tr>
+          <th data-sort="numTravail">N° trav</th>
+          <th data-sort="nom">Nom</th>
+          <th data-sort="sexe">Sexe</th>
+          <th data-sort="libelleRace">Race</th>
+          <th data-sort="dateNaissance">Né le</th>
+          <th data-sort="age">Âge</th>
+          <th data-sort="mereIPGNom">Mère</th>
+          <th data-sort="numNational">N° national</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <!-- Mobile cards -->
+  <div class="cards" id="cards"></div>
+</main>
+
+<!-- Modal détail -->
+<div class="modal-bg" id="modal-bg" role="dialog" aria-modal="true">
+  <div class="modal" id="modal-content"></div>
+</div>
+
+<!-- Modal config cloud -->
+<div class="modal-bg" id="config-modal-bg" role="dialog" aria-modal="true">
+  <div class="modal config-modal">
+    <div class="modal-head">
+      <h2>Sauvegarde cloud</h2>
+      <button class="close" id="config-close" aria-label="Fermer">×</button>
+    </div>
+    <div class="modal-body" id="config-body"></div>
+  </div>
+</div>
+
+<!-- Modal liste sauvegardes -->
+<div class="modal-bg" id="backups-modal-bg" role="dialog" aria-modal="true">
+  <div class="modal config-modal">
+    <div class="modal-head">
+      <h2>Restaurer depuis Drive</h2>
+      <button class="close" id="backups-close" aria-label="Fermer">×</button>
+    </div>
+    <div class="modal-body" id="backups-body"></div>
+  </div>
+</div>
+
+<!-- Modal d'ajout d'animal (formulaire 2 étapes) -->
+<div class="modal-bg" id="add-modal-bg" role="dialog" aria-modal="true">
+  <div class="modal config-modal" style="max-width:560px">
+    <div class="modal-head">
+      <h2>Ajouter un animal</h2>
+      <button class="close" id="add-close" aria-label="Fermer">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-step-indicator" id="form-indicator">
+        <strong>Étape 1/2</strong> · Identification
+      </div>
+
+      <!-- Étape 1 : Identification -->
+      <div class="form-step active" id="form-step-1">
+        <div class="form-section-title">Identification de l'animal</div>
+
+        <div class="form-row">
+          <label class="lbl req" for="add-num-national">N° national</label>
+          <div>
+            <input type="text" id="add-num-national" placeholder="ex: 3100495777" inputmode="numeric" maxlength="12" autocomplete="off">
+            <div class="form-help">10 chiffres après FR (ou 8 chiffres en saisie courte)</div>
+          </div>
+        </div>
+        <div class="form-error" id="err-num-national" hidden></div>
+
+        <div class="form-row">
+          <label class="lbl" for="add-num-travail">N° travail</label>
+          <div>
+            <input type="text" id="add-num-travail" placeholder="auto si vide" maxlength="6" autocomplete="off">
+            <div class="form-help">Boucle ferme courte (4-6 chiffres). Auto-déduit du n° national si vide.</div>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <label class="lbl" for="add-nom">Nom</label>
+          <input type="text" id="add-nom" placeholder="optionnel" maxlength="40" autocomplete="off">
+        </div>
+
+        <div class="form-row">
+          <label class="lbl req">Sexe</label>
+          <div class="form-radio-group">
+            <label><input type="radio" name="add-sexe" value="F"> ♀ Femelle</label>
+            <label><input type="radio" name="add-sexe" value="M"> ♂ Mâle</label>
+          </div>
+        </div>
+        <div class="form-error" id="err-sexe" hidden></div>
+
+        <div class="form-row">
+          <label class="lbl req" for="add-naissance">Né le</label>
+          <input type="date" id="add-naissance">
+        </div>
+        <div class="form-error" id="err-naissance" hidden></div>
+
+        <div class="form-row">
+          <label class="lbl req" for="add-race">Race</label>
+          <select id="add-race">
+            <option value="">— Choisir —</option>
+            <!-- Rempli dynamiquement avec les races officielles -->
+          </select>
+        </div>
+        <div class="form-error" id="err-race" hidden></div>
+
+        <div class="form-row">
+          <label class="lbl" for="add-cause-entree">Entrée</label>
+          <select id="add-cause-entree">
+            <option value="N">Naissance (cheptel)</option>
+            <option value="A">Achat</option>
+            <option value="I">Introduction</option>
+          </select>
+        </div>
+
+        <div class="form-row" id="row-date-entree" hidden>
+          <label class="lbl" for="add-date-entree">Date d'entrée</label>
+          <input type="date" id="add-date-entree">
+        </div>
+
+        <div class="form-actions">
+          <button type="button" class="ghost" id="add-cancel">Annuler</button>
+          <button type="button" class="primary" id="add-next" style="background:var(--terre);color:var(--paper);border-color:var(--terre)">Suivant →</button>
+        </div>
+      </div>
+
+      <!-- Étape 2 : Filiation (optionnelle) -->
+      <div class="form-step" id="form-step-2">
+        <div class="form-section-title">Filiation <span style="color:var(--ink-3);font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">— optionnelle</span></div>
+
+        <p style="font-size:13px;color:var(--ink-2);margin-bottom:18px">
+          Si tu connais les parents, indique-les ci-dessous. Sinon, laisse vide et passe à l'enregistrement.
+        </p>
+
+        <div class="form-section-title" style="font-size:11px">Mère</div>
+        <div class="form-row">
+          <label class="lbl" for="add-mere-select">Mère du cheptel</label>
+          <select id="add-mere-select">
+            <option value="">— Aucune ou inconnue —</option>
+          </select>
+        </div>
+        <div class="form-help" style="margin-top:-8px;margin-bottom:14px;padding-left:150px">
+          Liste des femelles présentes. Pour saisir une mère hors cheptel, utiliser les champs ci-dessous.
+        </div>
+
+        <div class="form-row">
+          <label class="lbl" for="add-mere-num">N° mère (manuel)</label>
+          <input type="text" id="add-mere-num" placeholder="optionnel" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label class="lbl" for="add-mere-nom">Nom mère</label>
+          <input type="text" id="add-mere-nom" placeholder="optionnel" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label class="lbl" for="add-mere-race">Race mère</label>
+          <select id="add-mere-race">
+            <option value="">— Inconnue —</option>
+          </select>
+        </div>
+
+        <div class="form-section-title" style="font-size:11px;margin-top:24px">Père</div>
+        <div class="form-row">
+          <label class="lbl" for="add-pere-select">Père du cheptel</label>
+          <select id="add-pere-select">
+            <option value="">— Inconnu ou hors cheptel —</option>
+          </select>
+        </div>
+        <div class="form-help" style="margin-top:-8px;margin-bottom:14px;padding-left:150px">
+          Mâles présents de plus de 8 mois. Sinon, saisir manuellement ci-dessous.
+        </div>
+
+        <div class="form-row">
+          <label class="lbl" for="add-pere-num">N° père (manuel)</label>
+          <input type="text" id="add-pere-num" placeholder="optionnel" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label class="lbl" for="add-pere-nom">Nom père</label>
+          <input type="text" id="add-pere-nom" placeholder="optionnel" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label class="lbl" for="add-pere-race">Race père</label>
+          <select id="add-pere-race">
+            <option value="">— Inconnue —</option>
+          </select>
+        </div>
+
+        <div class="form-actions">
+          <button type="button" class="ghost" id="add-back">← Retour</button>
+          <button type="button" class="primary" id="add-save" style="background:var(--terre);color:var(--paper);border-color:var(--terre)">Enregistrer</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+'use strict';
+
+/* ============================================================
+   CONSTANTES — codes officiels Idele/BDNI
+   ============================================================ */
+
+// Table officielle Idele — méthodologie 2024, mise à jour janvier 2025
+// type : 'lait' | 'viande' | 'mixte' | 'croise'
+// principale : true si race non menacée et > 2000 carcasses vaches/an sur 5 dernières années
+const RACES = {
+  // Type Lait
+  '18': { nom: 'Ayrshire', type: 'lait' },
+  '42': { nom: 'Dairy Shorthorn', type: 'lait' },
+  '74': { nom: 'Guernesey', type: 'lait' },
+  '15': { nom: 'Jersiaise', type: 'lait', principale: true },
+  '19': { nom: 'Pie Rouge des Plaines', type: 'lait', principale: true },
+  '66': { nom: 'Prim\'Holstein', type: 'lait', principale: true },
+  '44': { nom: 'Autres races traites étrangères', type: 'lait' },
+
+  // Type Mixte
+  '12': { nom: 'Abondance', type: 'mixte', principale: true },
+  '26': { nom: 'Bordelaise', type: 'mixte' },
+  '29': { nom: 'Bretonne pie noire', type: 'mixte', principale: true },
+  '21': { nom: 'Brune', type: 'mixte', principale: true },
+  '20': { nom: 'Buffle', type: 'mixte' },
+  '92': { nom: 'Canadienne', type: 'mixte' },
+  '69': { nom: 'Froment du Léon', type: 'mixte' },
+  '78': { nom: 'Gelbvieh', type: 'mixte' },
+  '86': { nom: 'Highland Cattle', type: 'mixte', principale: true },
+  '46': { nom: 'Montbéliarde', type: 'mixte', principale: true },
+  '54': { nom: 'N\'Dama', type: 'mixte' },
+  '56': { nom: 'Normande', type: 'mixte', principale: true },
+  '63': { nom: 'Rouge flamande', type: 'mixte' },
+  '35': { nom: 'Simmental française', type: 'mixte', principale: true },
+  '31': { nom: 'Tarentaise', type: 'mixte', principale: true },
+  '53': { nom: 'Villard de Lans', type: 'mixte', principale: true },
+  '57': { nom: 'Vosgienne', type: 'mixte' },
+
+  // Type Viande
+  '17': { nom: 'Angus', type: 'viande', principale: true },
+  '43': { nom: 'Armoricaine', type: 'viande' },
+  '14': { nom: 'Aubrac', type: 'viande', principale: true },
+  '30': { nom: 'Aurochs reconstitué', type: 'viande' },
+  '24': { nom: 'Bazadaise', type: 'viande' },
+  '61': { nom: 'Béarnaise', type: 'viande' },
+  '10': { nom: 'Bison', type: 'viande' },
+  '25': { nom: 'Blanc Bleu', type: 'viande', principale: true },
+  '22': { nom: 'Bleue de Bazougers', type: 'viande' },
+  '52': { nom: 'Bleue du Nord', type: 'viande' },
+  '79': { nom: 'Blonde d\'Aquitaine', type: 'viande', principale: true },
+  '81': { nom: 'Brahman (Zébu)', type: 'viande' },
+  '97': { nom: 'Casta (Aure et St Girons)', type: 'viande' },
+  '38': { nom: 'Charolaise', type: 'viande', principale: true },
+  '32': { nom: 'Chianina', type: 'viande' },
+  '36': { nom: 'Corse', type: 'viande' },
+  '55': { nom: 'Créole', type: 'viande' },
+  '51': { nom: 'De Combat (Espagnole brava)', type: 'viande' },
+  '65': { nom: 'Ferrandaise', type: 'viande' },
+  '73': { nom: 'Galloway', type: 'viande' },
+  '72': { nom: 'Gasconne', type: 'viande', principale: true },
+  '85': { nom: 'Hereford', type: 'viande', principale: true },
+  '82': { nom: 'Herens', type: 'viande' },
+  '95': { nom: 'Inra 95', type: 'viande', principale: true },
+  '34': { nom: 'Limousine', type: 'viande', principale: true },
+  '33': { nom: 'Lourdaise', type: 'viande' },
+  '58': { nom: 'Maraichine', type: 'viande' },
+  '49': { nom: 'Marchigiana', type: 'viande' },
+  '64': { nom: 'Marine Landaise', type: 'viande' },
+  '77': { nom: 'Mirandaise (Gasconne aréolée)', type: 'viande' },
+  '80': { nom: 'Moka', type: 'viande' },
+  '76': { nom: 'Nantaise', type: 'viande' },
+  '71': { nom: 'Parthenaise', type: 'viande', principale: true },
+  '75': { nom: 'Piémontaise', type: 'viande' },
+  '11': { nom: 'Pirenaica', type: 'viande' },
+  '37': { nom: 'Raço di Biou', type: 'viande' },
+  '41': { nom: 'Rouge des Prés', type: 'viande', principale: true },
+  '23': { nom: 'Salers', type: 'viande', principale: true },
+  '88': { nom: 'Saosnoise', type: 'viande' },
+  '45': { nom: 'South Devon', type: 'viande' },
+  '13': { nom: 'Wagyu', type: 'viande' },
+  '90': { nom: 'Zébu', type: 'viande' },
+  '48': { nom: 'Autres races allaitantes étrangères', type: 'viande' },
+
+  // Croisés
+  '39': { nom: 'Croisée', type: 'croise' }
+};
+
+const CAUSES_ENTREE = {
+  'N': 'Naissance', 'A': 'Achat', 'I': 'Introduction', 'P': 'Prêt',
+  'R': 'Retour', 'X': 'Autre'
+};
+
+const CAUSES_SORTIE = {
+  'B': 'Boucherie', 'M': 'Mort', 'V': 'Vente vif', 'E': 'Export',
+  'P': 'Prêt', 'S': 'Auto-consommation', 'X': 'Autre'
+};
+
+const STORAGE_KEY = 'carnet-sanitaire-v1';
+
+/* ============================================================
+   ÉTAT
+   ============================================================ */
+
+const state = {
+  animaux: [],
+  filtres: { presents: true, femelles: false, males: false, recherche: '' },
+  tri: { col: 'numTravail', asc: false }
+};
+
+/* ============================================================
+   PERSISTENCE LOCALE (localStorage pour V1, Dexie en V2)
+   ============================================================ */
+
+function persist() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      version: 1,
+      savedAt: new Date().toISOString(),
+      animaux: state.animaux
+    }));
+    // Déclenche une sauvegarde cloud différée si configuré
+    if (typeof scheduleAutoSave === 'function') scheduleAutoSave();
+  } catch (e) {
+    toast('Erreur de sauvegarde locale : ' + e.message, 'error');
+  }
+}
+
+function load() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data.animaux && Array.isArray(data.animaux)) {
+      state.animaux = data.animaux;
+    }
+  } catch (e) {
+    console.warn('Restauration impossible :', e);
+  }
+}
+
+/* ============================================================
+   PARSER CSV SYNEL
+   Format : ; séparateur, CRLF, ASCII, codes mnémoniques
+   ============================================================ */
+
+function parseCSVSynel(text) {
+  // Nettoie BOM éventuel
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+
+  const lines = text.split(/\r?\n/).filter(l => l.length > 0);
+  if (lines.length < 2) throw new Error('Fichier vide ou sans données');
+
+  const headers = lines[0].split(';').map(h => h.trim());
+  const REQUIRED = ['NUNATI', 'NUTRAV', 'DANAIS', 'TYRASU', 'SEXBOV'];
+  const missing = REQUIRED.filter(c => !headers.includes(c));
+  if (missing.length) {
+    throw new Error('Colonnes Synel manquantes : ' + missing.join(', '));
+  }
+
+  const idx = {};
+  headers.forEach((h, i) => { idx[h] = i; });
+
+  const animaux = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cells = lines[i].split(';');
+    const get = (k) => (idx[k] !== undefined ? (cells[idx[k]] || '').trim() : '');
+
+    const numNational = get('NUNATI');
+    if (!numNational) continue;
+
+    const sexe = get('SEXBOV');
+    const codeRace = get('TYRASU');
+    const causeSortie = get('CAUSSO');
+    const dateSortie = parseDateFR(get('DATESO'));
+
+    const animal = {
+      id: get('COPAIP') + numNational,
+      pays: get('COPAIP'),
+      numNational: numNational,
+      numTravail: get('NUTRAV'),
+      nom: get('NOBOVI') || null,
+      dateNaissance: parseDateFR(get('DANAIS')),
+      codeRace: codeRace,
+      libelleRace: (RACES[codeRace] && RACES[codeRace].nom) || ('Race ' + codeRace),
+      typeRace: (RACES[codeRace] && RACES[codeRace].type) || null,
+      sexe: sexe,
+      causeEntree: get('CAUSEN'),
+      libelleCauseEntree: CAUSES_ENTREE[get('CAUSEN')] || get('CAUSEN'),
+      dateEntree: parseDateFR(get('DATEEN')),
+      causeSortie: causeSortie || null,
+      libelleCauseSortie: causeSortie ? (CAUSES_SORTIE[causeSortie] || causeSortie) : null,
+      dateSortie: dateSortie,
+      mereIPG: extractParent(get, 'COPAMI', 'NUMEIP', 'NOMEIP', 'TRAMIP'),
+      mereCPB: extractParent(get, 'COPAME', 'NUMERE', 'NOMERE', 'TRAMER'),
+      pere: extractParent(get, 'COPAPE', 'NUPERE', 'NOPERE', 'TRAPER'),
+      importedAt: new Date().toISOString(),
+      source: 'synel-csv-v1'
+    };
+    animaux.push(animal);
+  }
+
+  return animaux;
+}
+
+function extractParent(get, kPays, kNum, kNom, kRace) {
+  const num = get(kNum);
+  if (!num) return null;
+  return {
+    pays: get(kPays),
+    numNational: num,
+    nom: get(kNom) || null,
+    codeRace: get(kRace),
+    libelleRace: (RACES[get(kRace)] && RACES[get(kRace)].nom) || ('Race ' + get(kRace))
+  };
+}
+
+function parseDateFR(s) {
+  if (!s) return null;
+  const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!m) return null;
+  return m[3] + '-' + m[2] + '-' + m[1]; // ISO
+}
+
+function formatDateFR(iso) {
+  if (!iso) return '—';
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? m[3] + '/' + m[2] + '/' + m[1] : iso;
+}
+
+function calcAge(dateNaissance) {
+  if (!dateNaissance) return null;
+  const naiss = new Date(dateNaissance);
+  const now = new Date();
+  let years = now.getFullYear() - naiss.getFullYear();
+  let months = now.getMonth() - naiss.getMonth();
+  if (now.getDate() < naiss.getDate()) months--;
+  if (months < 0) { years--; months += 12; }
+  return { years, months, totalMonths: years * 12 + months };
+}
+
+function formatAge(dateNaissance) {
+  const a = calcAge(dateNaissance);
+  if (!a) return '—';
+  if (a.totalMonths < 1) return '< 1 mois';
+  if (a.years === 0) return a.months + ' mois';
+  if (a.months === 0) return a.years + ' an' + (a.years > 1 ? 's' : '');
+  return a.years + ' an' + (a.years > 1 ? 's' : '') + ' ' + a.months + ' m';
+}
+
+/* ============================================================
+   RENDU
+   ============================================================ */
+
+function applyFilters(animaux) {
+  const q = state.filtres.recherche.trim().toLowerCase();
+  return animaux.filter(a => {
+    if (state.filtres.presents && a.dateSortie) return false;
+    if (state.filtres.femelles && a.sexe !== 'F') return false;
+    if (state.filtres.males && a.sexe !== 'M') return false;
+    if (q) {
+      const hay = [a.nom, a.numNational, a.numTravail, a.libelleRace,
+                   a.mereIPG?.nom, a.mereIPG?.numNational]
+                  .filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function applySort(animaux) {
+  const { col, asc } = state.tri;
+  const dir = asc ? 1 : -1;
+  return [...animaux].sort((a, b) => {
+    let va, vb;
+    if (col === 'mereIPGNom') {
+      va = a.mereIPG?.nom || ''; vb = b.mereIPG?.nom || '';
+    } else if (col === 'age') {
+      va = a.dateNaissance || ''; vb = b.dateNaissance || '';
+      // Pour l'âge, plus vieux = date plus ancienne, on inverse
+      return (va < vb ? 1 : va > vb ? -1 : 0) * dir;
+    } else {
+      va = a[col] ?? ''; vb = b[col] ?? '';
+    }
+    if (typeof va === 'string') va = va.toLowerCase();
+    if (typeof vb === 'string') vb = vb.toLowerCase();
+    return (va < vb ? -1 : va > vb ? 1 : 0) * dir;
+  });
+}
+
+function render() {
+  const empty = document.getElementById('empty');
+  const tw = document.getElementById('table-wrap');
+  const cards = document.getElementById('cards');
+  const stats = document.getElementById('stats');
+
+  if (state.animaux.length === 0) {
+    empty.style.display = 'block';
+    tw.hidden = true;
+    cards.style.display = 'none';
+    stats.hidden = true;
+    return;
+  }
+
+  empty.style.display = 'none';
+  stats.hidden = false;
+  renderStats();
+
+  const filtered = applySort(applyFilters(state.animaux));
+
+  // Desktop table
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = '';
+  for (const a of filtered) {
+    const tr = document.createElement('tr');
+    if (a.dateSortie) tr.classList.add('sortie');
+    tr.dataset.id = a.id;
+    tr.innerHTML = `
+      <td class="num-trav">${a.numTravail || '—'}</td>
+      <td class="nom">${a.nom || '<span style="color:var(--ink-3)">[' + (a.numTravail || '?') + ']</span>'}</td>
+      <td><span class="badge ${a.sexe.toLowerCase()}">${a.sexe === 'F' ? '♀' : '♂'}</span></td>
+      <td><span class="badge race">${a.libelleRace}</span></td>
+      <td>${formatDateFR(a.dateNaissance)}</td>
+      <td>${formatAge(a.dateNaissance)}</td>
+      <td>${a.mereIPG?.nom || (a.mereIPG?.numNational ? '#' + a.mereIPG.numNational.slice(-4) : '—')}</td>
+      <td style="color:var(--ink-3)">${a.pays} ${a.numNational}</td>
+    `;
+    tr.addEventListener('click', () => showDetail(a.id));
+    tbody.appendChild(tr);
+  }
+  tw.hidden = false;
+  // Sort indicators
+  document.querySelectorAll('thead th').forEach(th => {
+    th.classList.remove('sort-asc', 'sort-desc');
+    if (th.dataset.sort === state.tri.col) {
+      th.classList.add(state.tri.asc ? 'sort-asc' : 'sort-desc');
+    }
+  });
+
+  // Mobile cards
+  cards.innerHTML = '';
+  for (const a of filtered) {
+    const div = document.createElement('div');
+    div.className = 'card' + (a.dateSortie ? ' sortie' : '');
+    div.dataset.id = a.id;
+    div.innerHTML = `
+      <div class="card-head">
+        <div class="nom">${a.nom || '[' + (a.numTravail || '?') + ']'}</div>
+        <div class="ntrav">n° ${a.numTravail || '—'}</div>
+      </div>
+      <div class="card-meta">
+        <span class="badge ${a.sexe.toLowerCase()}">${a.sexe === 'F' ? '♀' : '♂'}</span>
+        <span>${a.libelleRace}</span>
+        <span class="sep">·</span>
+        <span>${formatAge(a.dateNaissance)}</span>
+        ${a.mereIPG?.nom ? '<span class="sep">·</span><span>mère ' + a.mereIPG.nom + '</span>' : ''}
+      </div>
+      <div class="card-num">${a.pays} ${a.numNational}${a.dateSortie ? ' · sorti le ' + formatDateFR(a.dateSortie) : ''}</div>
+    `;
+    div.addEventListener('click', () => showDetail(a.id));
+    cards.appendChild(div);
+  }
+
+  // Header sub
+  document.getElementById('header-sub').textContent =
+    `${filtered.length} animaux affichés sur ${state.animaux.length}`;
+}
+
+function renderStats() {
+  const tot = state.animaux.length;
+  const pres = state.animaux.filter(a => !a.dateSortie);
+  const f = pres.filter(a => a.sexe === 'F').length;
+  const m = pres.filter(a => a.sexe === 'M').length;
+  const veaux = pres.filter(a => {
+    const age = calcAge(a.dateNaissance);
+    return age && age.totalMonths < 8;
+  }).length;
+  document.getElementById('s-total').textContent = tot;
+  document.getElementById('s-presents').textContent = pres.length;
+  document.getElementById('s-femelles').textContent = f;
+  document.getElementById('s-males').textContent = m;
+  document.getElementById('s-veaux').textContent = veaux;
+}
+
+/* ============================================================
+   DÉTAIL
+   ============================================================ */
+
+function showDetail(id) {
+  const a = state.animaux.find(x => x.id === id);
+  if (!a) return;
+  const m = document.getElementById('modal-content');
+
+  const fields = (rows) => rows.map(r => `
+    <div class="field">
+      <div class="l">${r[0]}</div>
+      <div class="v">${r[1] ?? '—'}</div>
+    </div>`).join('');
+
+  let parentSection = '';
+  if (a.mereIPG) {
+    parentSection += '<div class="section-title">Mère (IPG)</div>' + fields([
+      ['N° national', a.mereIPG.pays + ' ' + a.mereIPG.numNational],
+      ['Nom', a.mereIPG.nom],
+      ['Race', a.mereIPG.libelleRace]
+    ]);
+  }
+  if (a.mereCPB && a.mereCPB.numNational !== a.mereIPG?.numNational) {
+    parentSection += '<div class="section-title">Mère (CPB — certifiée)</div>' + fields([
+      ['N° national', a.mereCPB.pays + ' ' + a.mereCPB.numNational],
+      ['Nom', a.mereCPB.nom],
+      ['Race', a.mereCPB.libelleRace]
+    ]);
+  }
+  if (a.pere) {
+    parentSection += '<div class="section-title">Père</div>' + fields([
+      ['N° national', a.pere.pays + ' ' + (a.pere.numNational || '—')],
+      ['Nom', a.pere.nom],
+      ['Race', a.pere.libelleRace]
+    ]);
+  }
+
+  // Titre avec bouton crayon pour éditer le nom
+  const displayName = a.nom || '[' + a.numTravail + ']';
+  const headerHtml = `
+    <div class="modal-head" id="detail-head">
+      <h2 style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span id="detail-name">${displayName}</span>
+        <button class="ghost" id="edit-name-btn" title="Modifier le nom" style="padding:3px 8px;font-size:14px;box-shadow:none">✎</button>
+      </h2>
+      <button class="close" aria-label="Fermer">×</button>
+    </div>`;
+
+  m.innerHTML = `
+    ${headerHtml}
+    <div class="modal-body">
+      <div class="section-title">Identification</div>
+      ${fields([
+        ['N° national', a.pays + ' ' + a.numNational],
+        ['N° travail', a.numTravail],
+        ['Sexe', a.sexe === 'F' ? 'Femelle' : 'Mâle'],
+        ['Race', a.libelleRace + ' (code ' + a.codeRace + ')' + (a.typeRace ? ' · type ' + a.typeRace : '')]
+      ])}
+      <div class="section-title">Vie</div>
+      ${fields([
+        ['Né le', formatDateFR(a.dateNaissance) + ' · ' + formatAge(a.dateNaissance)],
+        ['Entrée', formatDateFR(a.dateEntree) + ' · ' + a.libelleCauseEntree],
+        ['Sortie', a.dateSortie ? (formatDateFR(a.dateSortie) + ' · ' + a.libelleCauseSortie) : 'Présent']
+      ])}
+      ${parentSection}
+      <div style="margin-top:24px;padding-top:14px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <button class="ghost danger" id="delete-animal-btn">🗑 Supprimer l'animal</button>
+        <button class="ghost" id="detail-close-btn">Fermer</button>
+      </div>
+    </div>
+  `;
+
+  // Liaisons
+  document.getElementById('modal-bg').classList.add('show');
+  m.querySelector('.close').addEventListener('click', closeModal);
+  document.getElementById('detail-close-btn').addEventListener('click', closeModal);
+  document.getElementById('edit-name-btn').addEventListener('click', () => startEditName(a));
+  document.getElementById('delete-animal-btn').addEventListener('click', () => deleteAnimal(a));
+}
+
+// Édition inline du nom
+function startEditName(animal) {
+  const head = document.getElementById('detail-head');
+  if (!head) return;
+  const currentName = animal.nom || '';
+  head.querySelector('h2').innerHTML = `
+    <input type="text" id="edit-name-input" value="${currentName.replace(/"/g, '&quot;')}"
+           placeholder="${animal.numTravail ? '[' + animal.numTravail + ']' : 'Nom'}"
+           maxlength="40"
+           style="font-family:inherit;font-size:18px;padding:4px 8px;border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:3px;width:200px">
+    <button class="primary" id="save-name-btn" style="background:var(--terre);color:var(--paper);border-color:var(--terre);padding:4px 10px;font-size:13px">OK</button>
+    <button class="ghost" id="cancel-name-btn" style="padding:4px 10px;font-size:13px">Annuler</button>
+  `;
+  const input = document.getElementById('edit-name-input');
+  input.focus();
+  input.select();
+
+  const save = () => {
+    const newName = input.value.trim() || null;
+    animal.nom = newName;
+    persist();
+    render();
+    showDetail(animal.id); // re-affiche la fiche avec le nouveau nom
+    toast('Nom mis à jour', 'success');
+  };
+
+  const cancel = () => showDetail(animal.id);
+
+  document.getElementById('save-name-btn').addEventListener('click', save);
+  document.getElementById('cancel-name-btn').addEventListener('click', cancel);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') save();
+    if (e.key === 'Escape') {
+      e.stopPropagation(); // empêche la fermeture de la modale
+      cancel();
+    }
+  });
+}
+
+// Suppression d'un animal avec garde-fous
+function deleteAnimal(animal) {
+  const displayName = animal.nom || '[' + animal.numTravail + ']';
+
+  // Vérifie si cet animal est référencé comme parent d'autres animaux
+  const enfants = state.animaux.filter(a =>
+    a.id !== animal.id && (
+      a.mereIPG?.numNational === animal.numNational ||
+      a.mereCPB?.numNational === animal.numNational ||
+      a.pere?.numNational === animal.numNational
+    )
+  );
+
+  let confirmMsg = `Supprimer définitivement ${displayName} de la base ?\n\nCette action est irréversible.`;
+  if (enfants.length > 0) {
+    const noms = enfants.slice(0, 3).map(e => e.nom || '[' + e.numTravail + ']').join(', ');
+    const plus = enfants.length > 3 ? ` et ${enfants.length - 3} autre${enfants.length - 3 > 1 ? 's' : ''}` : '';
+    confirmMsg += `\n\n⚠ Attention : ${enfants.length} animal${enfants.length > 1 ? 'ux' : ''} (${noms}${plus}) ${enfants.length > 1 ? 'ont' : 'a'} cet animal comme parent. Leurs filiations seront conservées telles quelles (n° et nom préservés), mais le lien direct vers la fiche sera perdu.`;
+  }
+
+  if (!confirm(confirmMsg)) return;
+
+  state.animaux = state.animaux.filter(a => a.id !== animal.id);
+  persist();
+  render();
+  closeModal();
+  toast(`${displayName} supprimé du cheptel`);
+}
+
+function closeModal() {
+  document.getElementById('modal-bg').classList.remove('show');
+}
+
+/* ============================================================
+   IMPORT / EXPORT / RESTAURATION
+   ============================================================ */
+
+async function handleImport(file) {
+  try {
+    const text = await file.text();
+    const animaux = parseCSVSynel(text);
+    if (animaux.length === 0) {
+      toast('Aucun animal trouvé dans le fichier', 'error');
+      return;
+    }
+    // Fusion par n° national : on remplace les existants, on ajoute les nouveaux
+    const map = new Map(state.animaux.map(a => [a.id, a]));
+    let added = 0, updated = 0;
+    for (const a of animaux) {
+      if (map.has(a.id)) updated++; else added++;
+      map.set(a.id, a);
+    }
+    state.animaux = Array.from(map.values());
+    persist();
+    render();
+    toast(`Import OK — ${added} nouveau${added > 1 ? 'x' : ''}, ${updated} mis à jour`, 'success');
+  } catch (e) {
+    toast('Erreur d\'import : ' + e.message, 'error');
+  }
+}
+
+function exportJSON() {
+  const data = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    animaux: state.animaux
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const date = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `carnet-sanitaire-${date}.json`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
+  toast('Sauvegarde téléchargée', 'success');
+}
+
+async function handleRestore(file) {
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    if (!data.animaux || !Array.isArray(data.animaux)) {
+      throw new Error('Format de sauvegarde invalide');
+    }
+    if (!confirm(`Restaurer ${data.animaux.length} animaux ? Les données actuelles seront remplacées.`)) return;
+    state.animaux = data.animaux;
+    persist();
+    render();
+    toast(`${data.animaux.length} animaux restaurés`, 'success');
+  } catch (e) {
+    toast('Erreur de restauration : ' + e.message, 'error');
+  }
+}
+
+function reset() {
+  if (!confirm('Vider toutes les données locales ? Cette action est irréversible (sauf si vous avez une sauvegarde).')) return;
+  state.animaux = [];
+  localStorage.removeItem(STORAGE_KEY);
+  render();
+  toast('Base vidée');
+}
+
+/* ============================================================
+   DÉMO — quelques animaux factices pour tester sans CSV
+   ============================================================ */
+
+function loadDemo() {
+  const demoCSV = `COPAIP;NUNATI;NUTRAV;NOBOVI;DANAIS;TYRASU;SEXBOV;CAUSEN;DATEEN;CAUSSO;DATESO;COPAMI;NUMEIP;NOMEIP;TRAMIP;COPAME;NUMERE;NOMERE;TRAMER;COPAPE;NUPERE;NOPERE;TRAPER;
+FR;3100672140;2140;TASMANIE;17/02/2022;72;F;A;13/12/2024;;;FR;3100709135;PALOTTE;72;FR;3100709135;PALOTTE;72;FR;3100278501;OCARINA;72;
+FR;3100802901;2901;URSULINE;29/03/2023;72;F;N;29/03/2023;;;FR;3150156027;NATE;72;;;;;;;;72;
+FR;3100495773;5773;BERTRAND;08/01/2026;39;M;N;08/01/2026;;;FR;3100137109;NALA;97;;;;;;;;72;
+FR;3100495774;5774;BISON;08/01/2026;39;M;N;08/01/2026;;;FR;4729001704;MARGUERITE;23;;;;;;;;72;
+FR;3100623762;3762;USNEE;23/01/2023;72;F;A;20/01/2026;;;FR;3100287962;NYMPHETTE;72;FR;3100287962;NYMPHETTE;72;FR;3100287904;NAVARIN;72;`;
+  state.animaux = parseCSVSynel(demoCSV);
+  persist();
+  render();
+  toast('Données de démo chargées');
+}
+
+/* ============================================================
+   AJOUT MANUEL D'ANIMAL
+   ============================================================ */
+
+// Remplit les listes déroulantes de race avec un tri intelligent :
+// - "Suggérées" : races déjà présentes dans le cheptel + Croisée (39)
+// - "Toutes les races" : toutes les autres, groupées par type
+function populateAddFormSelects() {
+  const raceSelect = document.getElementById('add-race');
+  const mereRaceSelect = document.getElementById('add-mere-race');
+  const pereRaceSelect = document.getElementById('add-pere-race');
+
+  // 1. Codes race présents dans le cheptel (animaux + parents IPG/CPB/père)
+  const cheptelCodes = new Set();
+  for (const a of state.animaux) {
+    if (a.codeRace) cheptelCodes.add(a.codeRace);
+    if (a.mereIPG?.codeRace) cheptelCodes.add(a.mereIPG.codeRace);
+    if (a.mereCPB?.codeRace) cheptelCodes.add(a.mereCPB.codeRace);
+    if (a.pere?.codeRace) cheptelCodes.add(a.pere.codeRace);
+  }
+  // 2. Toujours inclure la croisée dans les suggestions (cas fréquent à saisir)
+  cheptelCodes.add('39');
+  // Filtrer aux codes effectivement reconnus
+  const suggested = Array.from(cheptelCodes).filter(c => RACES[c]);
+  // Tri par fréquence dans le cheptel (plus fréquente en premier)
+  const counts = {};
+  for (const a of state.animaux) {
+    if (a.codeRace) counts[a.codeRace] = (counts[a.codeRace] || 0) + 1;
+  }
+  suggested.sort((a, b) => (counts[b] || 0) - (counts[a] || 0) || RACES[a].nom.localeCompare(RACES[b].nom, 'fr'));
+
+  // 3. Toutes les autres races, groupées par type
+  const typesOrder = { 'viande': 1, 'mixte': 2, 'lait': 3, 'croisé': 4, 'croise': 4 };
+  const others = Object.keys(RACES).filter(c => !cheptelCodes.has(c));
+  const groups = {};
+  for (const code of others) {
+    const t = RACES[code].type || 'autre';
+    (groups[t] = groups[t] || []).push(code);
+  }
+  for (const t in groups) {
+    groups[t].sort((a, b) => RACES[a].nom.localeCompare(RACES[b].nom, 'fr'));
+  }
+
+  const labels = { 'viande': 'Type viande', 'mixte': 'Type mixte', 'lait': 'Type lait', 'croisé': 'Croisés', 'croise': 'Croisés' };
+
+  const buildOptions = (firstOption) => {
+    let html = `<option value="">${firstOption}</option>`;
+    // Section "Suggérées"
+    if (suggested.length > 0) {
+      html += '<optgroup label="Races du cheptel">';
+      for (const code of suggested) {
+        const r = RACES[code];
+        const star = r.principale ? ' ★' : '';
+        const count = counts[code] ? ` · ${counts[code]} animal${counts[code] > 1 ? 'aux' : ''}` : '';
+        html += `<option value="${code}">${r.nom}${star} (${code})${count}</option>`;
+      }
+      html += '</optgroup>';
+    }
+    // Section "Toutes les autres", par type
+    for (const t of ['viande', 'mixte', 'lait', 'croisé', 'croise']) {
+      if (!groups[t] || groups[t].length === 0) continue;
+      html += `<optgroup label="${labels[t]}">`;
+      for (const code of groups[t]) {
+        const r = RACES[code];
+        const star = r.principale ? ' ★' : '';
+        html += `<option value="${code}">${r.nom}${star} (${code})</option>`;
+      }
+      html += '</optgroup>';
+    }
+    return html;
+  };
+
+  raceSelect.innerHTML = buildOptions('— Choisir —');
+  mereRaceSelect.innerHTML = buildOptions('— Inconnue —');
+  pereRaceSelect.innerHTML = buildOptions('— Inconnue —');
+}
+
+// Remplit la liste déroulante des mères potentielles (femelles présentes)
+function populateMereSelect() {
+  const sel = document.getElementById('add-mere-select');
+  const meres = state.animaux
+    .filter(a => a.sexe === 'F' && !a.dateSortie)
+    .sort((a, b) => (a.nom || '').localeCompare(b.nom || '', 'fr'));
+  let html = '<option value="">— Aucune ou inconnue —</option>';
+  for (const m of meres) {
+    const label = (m.nom || `[${m.numTravail}]`) + ` · n°${m.numTravail || m.numNational.slice(-4)} · ${m.libelleRace}`;
+    html += `<option value="${m.id}">${label}</option>`;
+  }
+  sel.innerHTML = html;
+}
+
+// Remplit la liste déroulante des pères potentiels (mâles présents ≥ 8 mois)
+function populatePereSelect() {
+  const sel = document.getElementById('add-pere-select');
+  if (!sel) return;
+  const peres = state.animaux
+    .filter(a => {
+      if (a.sexe !== 'M' || a.dateSortie) return false;
+      const age = calcAge(a.dateNaissance);
+      return age && age.totalMonths >= 8;
+    })
+    .sort((a, b) => (a.nom || '').localeCompare(b.nom || '', 'fr'));
+  let html = '<option value="">— Inconnu ou hors cheptel —</option>';
+  for (const p of peres) {
+    const age = calcAge(p.dateNaissance);
+    const ageLabel = age.years > 0 ? `${age.years} an${age.years > 1 ? 's' : ''}` : `${age.totalMonths} mois`;
+    const label = (p.nom || `[${p.numTravail}]`) + ` · n°${p.numTravail || p.numNational.slice(-4)} · ${p.libelleRace} · ${ageLabel}`;
+    html += `<option value="${p.id}">${label}</option>`;
+  }
+  sel.innerHTML = html;
+}
+
+// Etat de la modal d'ajout
+const addFormState = { step: 1, draft: {} };
+
+function openAddModal() {
+  // Reset complet
+  addFormState.step = 1;
+  addFormState.draft = {};
+  document.querySelectorAll('.form-step').forEach(s => s.classList.remove('active'));
+  document.getElementById('form-step-1').classList.add('active');
+  document.getElementById('form-indicator').innerHTML = '<strong>Étape 1/2</strong> · Identification';
+
+  // Reset des champs
+  ['add-num-national', 'add-num-travail', 'add-nom', 'add-mere-num',
+   'add-mere-nom', 'add-pere-num', 'add-pere-nom'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  document.querySelectorAll('input[name="add-sexe"]').forEach(r => r.checked = false);
+  document.getElementById('add-naissance').value = '';
+  document.getElementById('add-race').value = '';
+  document.getElementById('add-mere-race').value = '';
+  document.getElementById('add-pere-race').value = '';
+  document.getElementById('add-mere-select').value = '';
+  document.getElementById('add-pere-select').value = '';
+  document.getElementById('add-cause-entree').value = 'N';
+  document.getElementById('add-date-entree').value = '';
+  document.getElementById('row-date-entree').hidden = true;
+
+  // Reset des erreurs
+  document.querySelectorAll('.form-error').forEach(e => e.hidden = true);
+  document.querySelectorAll('[aria-invalid="true"]').forEach(e => e.removeAttribute('aria-invalid'));
+
+  populateAddFormSelects();
+  populateMereSelect();
+  populatePereSelect();
+  document.getElementById('add-modal-bg').classList.add('show');
+  setTimeout(() => document.getElementById('add-num-national').focus(), 50);
+}
+
+function closeAddModal() {
+  document.getElementById('add-modal-bg').classList.remove('show');
+}
+
+// Validation étape 1 et passage à étape 2
+function validateAndNextStep() {
+  // Reset erreurs
+  document.querySelectorAll('.form-error').forEach(e => e.hidden = true);
+  document.querySelectorAll('#form-step-1 [aria-invalid="true"]').forEach(e => e.removeAttribute('aria-invalid'));
+
+  const numNat = document.getElementById('add-num-national').value.trim().replace(/\s+/g, '');
+  const sexe = document.querySelector('input[name="add-sexe"]:checked')?.value;
+  const naissance = document.getElementById('add-naissance').value;
+  const codeRace = document.getElementById('add-race').value;
+
+  let hasError = false;
+
+  // Validation n° national : 8 à 12 chiffres
+  if (!numNat) {
+    showFieldError('add-num-national', 'err-num-national', 'Le n° national est obligatoire.');
+    hasError = true;
+  } else if (!/^\d{8,12}$/.test(numNat)) {
+    showFieldError('add-num-national', 'err-num-national', 'Le n° doit contenir 8 à 12 chiffres uniquement.');
+    hasError = true;
+  } else {
+    // Vérification d'unicité
+    const id = 'FR' + numNat;
+    if (state.animaux.some(a => a.id === id || a.numNational === numNat)) {
+      showFieldError('add-num-national', 'err-num-national', 'Un animal avec ce n° existe déjà dans ta base.');
+      hasError = true;
+    }
+  }
+
+  if (!sexe) {
+    document.getElementById('err-sexe').textContent = 'Sélectionner un sexe.';
+    document.getElementById('err-sexe').hidden = false;
+    hasError = true;
+  }
+
+  if (!naissance) {
+    showFieldError('add-naissance', 'err-naissance', 'La date de naissance est obligatoire.');
+    hasError = true;
+  } else {
+    const d = new Date(naissance);
+    const now = new Date();
+    if (d > now) {
+      showFieldError('add-naissance', 'err-naissance', 'La date de naissance ne peut être dans le futur.');
+      hasError = true;
+    } else if (d.getFullYear() < 1990) {
+      showFieldError('add-naissance', 'err-naissance', 'Date de naissance trop ancienne (avant 1990 ?).');
+      hasError = true;
+    }
+  }
+
+  if (!codeRace) {
+    showFieldError('add-race', 'err-race', 'Sélectionner une race.');
+    hasError = true;
+  }
+
+  if (hasError) return;
+
+  // Stocke dans le brouillon
+  addFormState.draft = {
+    numNational: numNat,
+    numTravail: document.getElementById('add-num-travail').value.trim() || numNat.slice(-4),
+    nom: document.getElementById('add-nom').value.trim() || null,
+    sexe: sexe,
+    dateNaissance: naissance,
+    codeRace: codeRace,
+    causeEntree: document.getElementById('add-cause-entree').value,
+    dateEntree: document.getElementById('add-date-entree').value || naissance
+  };
+
+  // Passage étape 2
+  addFormState.step = 2;
+  document.querySelectorAll('.form-step').forEach(s => s.classList.remove('active'));
+  document.getElementById('form-step-2').classList.add('active');
+  document.getElementById('form-indicator').innerHTML = '<strong>Étape 2/2</strong> · Filiation (optionnelle)';
+}
+
+function showFieldError(fieldId, errId, msg) {
+  document.getElementById(fieldId).setAttribute('aria-invalid', 'true');
+  const err = document.getElementById(errId);
+  err.textContent = msg;
+  err.hidden = false;
+}
+
+function backToStep1() {
+  addFormState.step = 1;
+  document.querySelectorAll('.form-step').forEach(s => s.classList.remove('active'));
+  document.getElementById('form-step-1').classList.add('active');
+  document.getElementById('form-indicator').innerHTML = '<strong>Étape 1/2</strong> · Identification';
+}
+
+// Construction de l'objet animal final et sauvegarde
+function saveNewAnimal() {
+  const d = addFormState.draft;
+  const codeRace = d.codeRace;
+
+  // Construction mère IPG : priorité à la sélection cheptel, sinon saisie manuelle
+  let mereIPG = null;
+  const mereSelectedId = document.getElementById('add-mere-select').value;
+  if (mereSelectedId) {
+    const mere = state.animaux.find(a => a.id === mereSelectedId);
+    if (mere) {
+      mereIPG = {
+        pays: mere.pays,
+        numNational: mere.numNational,
+        nom: mere.nom,
+        codeRace: mere.codeRace,
+        libelleRace: mere.libelleRace
+      };
+    }
+  } else {
+    const mereNum = document.getElementById('add-mere-num').value.trim();
+    const mereNom = document.getElementById('add-mere-nom').value.trim();
+    const mereRace = document.getElementById('add-mere-race').value;
+    if (mereNum || mereNom) {
+      mereIPG = {
+        pays: 'FR',
+        numNational: mereNum || null,
+        nom: mereNom || null,
+        codeRace: mereRace || null,
+        libelleRace: mereRace ? RACES[mereRace].nom : null
+      };
+    }
+  }
+
+  // Père : priorité à la sélection du cheptel, sinon saisie manuelle
+  let pere = null;
+  const pereSelectedId = document.getElementById('add-pere-select').value;
+  if (pereSelectedId) {
+    const p = state.animaux.find(a => a.id === pereSelectedId);
+    if (p) {
+      pere = {
+        pays: p.pays,
+        numNational: p.numNational,
+        nom: p.nom,
+        codeRace: p.codeRace,
+        libelleRace: p.libelleRace
+      };
+    }
+  } else {
+    const pereNum = document.getElementById('add-pere-num').value.trim();
+    const pereNom = document.getElementById('add-pere-nom').value.trim();
+    const pereRace = document.getElementById('add-pere-race').value;
+    if (pereNum || pereNom) {
+      pere = {
+        pays: 'FR',
+        numNational: pereNum || null,
+        nom: pereNom || null,
+        codeRace: pereRace || null,
+        libelleRace: pereRace ? RACES[pereRace].nom : null
+      };
+    }
+  }
+
+  const animal = {
+    id: 'FR' + d.numNational,
+    pays: 'FR',
+    numNational: d.numNational,
+    numTravail: d.numTravail,
+    nom: d.nom,
+    dateNaissance: d.dateNaissance,
+    codeRace: codeRace,
+    libelleRace: RACES[codeRace].nom,
+    typeRace: RACES[codeRace].type || null,
+    sexe: d.sexe,
+    causeEntree: d.causeEntree,
+    libelleCauseEntree: CAUSES_ENTREE[d.causeEntree] || d.causeEntree,
+    dateEntree: d.dateEntree,
+    causeSortie: null,
+    libelleCauseSortie: null,
+    dateSortie: null,
+    mereIPG: mereIPG,
+    mereCPB: null,
+    pere: pere,
+    importedAt: new Date().toISOString(),
+    source: 'manuel-v1'
+  };
+
+  state.animaux.push(animal);
+  persist();
+  render();
+  closeAddModal();
+  toast(`${animal.nom || animal.numTravail} ajouté au cheptel`, 'success');
+}
+
+// Affiche/masque la date d'entrée selon la cause
+function onCauseEntreeChange() {
+  const cause = document.getElementById('add-cause-entree').value;
+  document.getElementById('row-date-entree').hidden = (cause === 'N');
+}
+
+/* ============================================================
+   TOAST
+   ============================================================ */
+
+let toastTimer;
+function toast(msg, kind) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (kind ? ' ' + kind : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = 'toast'; }, 3500);
+}
+
+/* ============================================================
+   CLOUD — Configuration et providers
+   ============================================================
+   Architecture : un provider = { connect, disconnect, save, list, load, isConnected }
+   Pour ajouter Dropbox / OneDrive plus tard, créer un nouvel objet
+   conforme à la même interface et l'enregistrer dans CLOUD_PROVIDERS.
+   ============================================================ */
+
+// ⚠️ CONFIGURATION REQUISE
+// Pour activer Google Drive :
+// 1. Créer un projet sur https://console.cloud.google.com/
+// 2. Activer "Google Drive API" et "Google Identity Services"
+// 3. Créer un identifiant OAuth client ID type "Application web"
+// 4. Ajouter ton domaine GitHub Pages dans les origines JavaScript autorisées
+// 5. Coller le Client ID ci-dessous
+const GOOGLE_CLIENT_ID = '635142647896-eo163p9l70igkcjf5ue6r16e153ss0bm.apps.googleusercontent.com';
+
+const CLOUD_STORAGE_KEY = 'carnet-cloud-config-v1';
+const CLOUD_FOLDER_NAME = 'Carnet Sanitaire';
+
+// État cloud global
+const cloudState = {
+  provider: null,        // 'google-drive' | null
+  // 'disconnected' | 'connected' | 'syncing' | 'error' | 'needs_reconnect'
+  status: 'disconnected',
+  lastSync: null,        // ISO date dernière sauvegarde réussie
+  errorMessage: null,
+  pendingSaveTimer: null,
+  folderId: null,        // ID du dossier "Carnet Sanitaire" sur Drive
+  dirty: false,          // true s'il y a des modifs non synchronisées vers le cloud
+  reconciling: false     // true pendant la modal de réconciliation post-connexion (bloque les syncs)
+};
+
+function loadCloudConfig() {
+  try {
+    const raw = localStorage.getItem(CLOUD_STORAGE_KEY);
+    if (!raw) return;
+    const cfg = JSON.parse(raw);
+    cloudState.provider = cfg.provider || null;
+    cloudState.lastSync = cfg.lastSync || null;
+    cloudState.folderId = cfg.folderId || null;
+  } catch (e) { /* silent */ }
+}
+
+function saveCloudConfig() {
+  try {
+    localStorage.setItem(CLOUD_STORAGE_KEY, JSON.stringify({
+      provider: cloudState.provider,
+      lastSync: cloudState.lastSync,
+      folderId: cloudState.folderId
+    }));
+  } catch (e) { /* silent */ }
+}
+
+/* ----- Provider Google Drive ----- */
+
+const GoogleDriveProvider = {
+  name: 'Google Drive',
+  id: 'google-drive',
+  scope: 'https://www.googleapis.com/auth/drive.file',
+  tokenClient: null,
+  accessToken: null,
+  tokenExpiresAt: 0,
+  gisLoaded: false,
+
+  // Clé localStorage : token persisté entre fermetures de navigateur.
+  // Note : on utilise localStorage et non sessionStorage parce que la politique
+  // Cross-Origin-Opener-Policy de GitHub Pages bloque la négociation silencieuse
+  // d'OAuth. Sans cache persistant, on aurait une popup à chaque rafraîchissement.
+  // Le token Google reste valide ~1h ; au-delà, popup explicite.
+  _TOKEN_KEY: 'carnet-google-token-v1',
+
+  isAvailable() {
+    return GOOGLE_CLIENT_ID && GOOGLE_CLIENT_ID.length > 10;
+  },
+
+  // Sauvegarde du token. Permet de F5, fermer/rouvrir onglet, fermer/rouvrir
+  // navigateur sans devoir reposer une popup OAuth tant que le token est valide.
+  _persistToken() {
+    try {
+      if (this.accessToken && this.tokenExpiresAt > Date.now()) {
+        localStorage.setItem(this._TOKEN_KEY, JSON.stringify({
+          accessToken: this.accessToken,
+          tokenExpiresAt: this.tokenExpiresAt
+        }));
+      }
+    } catch (e) { /* silent */ }
+  },
+
+  _loadPersistedToken() {
+    try {
+      const raw = localStorage.getItem(this._TOKEN_KEY);
+      if (!raw) return false;
+      const data = JSON.parse(raw);
+      // 60 sec de marge pour éviter d'utiliser un token quasi-expiré
+      if (data.accessToken && data.tokenExpiresAt > Date.now() + 60000) {
+        this.accessToken = data.accessToken;
+        this.tokenExpiresAt = data.tokenExpiresAt;
+        return true;
+      }
+      // Token expiré : on nettoie
+      localStorage.removeItem(this._TOKEN_KEY);
+    } catch (e) { /* silent */ }
+    return false;
+  },
+
+  _clearPersistedToken() {
+    try { localStorage.removeItem(this._TOKEN_KEY); } catch (e) {}
+  },
+
+  // Charge le SDK Google Identity Services à la demande (lazy load)
+  async _loadGIS() {
+    if (this.gisLoaded) return;
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      script.onload = () => {
+        this.gisLoaded = true;
+        resolve();
+      };
+      script.onerror = () => reject(new Error('Impossible de charger Google Identity Services'));
+      document.head.appendChild(script);
+    });
+  },
+
+  async _ensureToken(interactive = true) {
+    // 1. Token déjà en mémoire et valide
+    if (this.accessToken && Date.now() < this.tokenExpiresAt - 60000) {
+      return this.accessToken;
+    }
+    // 2. Token persisté en sessionStorage (autre onglet ou rafraîchissement de la page)
+    if (this._loadPersistedToken()) {
+      return this.accessToken;
+    }
+    await this._loadGIS();
+
+    // Helper pour faire une demande de token. promptMode = '' (interactif) ou 'none' (silencieux).
+    // IMPORTANT : un mode interactif ('') ne peut être déclenché QUE dans la chaîne
+    // d'événements d'un clic utilisateur direct. Sinon Chrome/Safari bloquent la popup.
+    const self = this; // capture explicite pour éviter tout problème de contexte dans les callbacks
+    const tryRequest = (promptMode) => new Promise((resolve, reject) => {
+      try {
+        self.tokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: GOOGLE_CLIENT_ID,
+          scope: self.scope,
+          callback: (resp) => {
+            if (resp.error) {
+              reject(new Error(resp.error_description || resp.error));
+              return;
+            }
+            self.accessToken = resp.access_token;
+            self.tokenExpiresAt = Date.now() + (resp.expires_in * 1000);
+            self._persistToken(); // sauvegarde du token pour les sessions ultérieures
+            resolve(self.accessToken);
+          },
+          error_callback: (err) => {
+            // err.type peut valoir : "popup_failed_to_open", "popup_closed",
+            // "unknown" (souvent = interaction_required en mode silencieux).
+            const msg = err.message || err.type || 'OAuth annulé';
+            const e = new Error(msg);
+            e.errorType = err.type;
+            reject(e);
+          }
+        });
+        self.tokenClient.requestAccessToken({ prompt: promptMode });
+      } catch (e) {
+        reject(e);
+      }
+    });
+
+    if (!interactive) {
+      // Mode silencieux : on tente sans popup. Si Google refuse, on lève une
+      // erreur typée NEED_RECONNECT que l'UI doit gérer en proposant un
+      // bouton de reconnexion explicite (qui sera, lui, dans une chaîne de clic).
+      try {
+        return await tryRequest('none');
+      } catch (e) {
+        const reconnectErr = new Error('NEED_RECONNECT');
+        reconnectErr.code = 'NEED_RECONNECT';
+        reconnectErr.original = e;
+        throw reconnectErr;
+      }
+    }
+    // Mode interactif : popup directe. À utiliser UNIQUEMENT dans une chaîne de clic.
+    return await tryRequest('');
+  },
+
+  async connect() {
+    if (!this.isAvailable()) {
+      throw new Error('Google Drive n\'est pas configuré (CLIENT_ID manquant). Voir les commentaires dans le code source.');
+    }
+    await this._ensureToken(true);
+    // Trouve ou crée le dossier "Carnet Sanitaire"
+    cloudState.folderId = await this._findOrCreateFolder();
+    return true;
+  },
+
+  disconnect() {
+    if (this.accessToken && window.google?.accounts?.oauth2) {
+      try { google.accounts.oauth2.revoke(this.accessToken, () => {}); } catch (e) {}
+    }
+    this.accessToken = null;
+    this.tokenExpiresAt = 0;
+    this._clearPersistedToken();
+  },
+
+  async _api(path, options = {}) {
+    await this._ensureToken(false);
+    let res = await fetch('https://www.googleapis.com/' + path, {
+      ...options,
+      headers: {
+        'Authorization': 'Bearer ' + this.accessToken,
+        ...(options.headers || {})
+      }
+    });
+    // Si le serveur Google répond 401 (token invalide / révoqué côté serveur
+    // alors qu'on le pensait encore valide), on force un nouveau token et on
+    // rejoue la requête une seule fois.
+    if (res.status === 401) {
+      this.accessToken = null;
+      this.tokenExpiresAt = 0;
+      this._clearPersistedToken();
+      await this._ensureToken(false);
+      res = await fetch('https://www.googleapis.com/' + path, {
+        ...options,
+        headers: {
+          'Authorization': 'Bearer ' + this.accessToken,
+          ...(options.headers || {})
+        }
+      });
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Drive API ${res.status} : ${text.slice(0, 200)}`);
+    }
+    return res;
+  },
+
+  async _findOrCreateFolder() {
+    // Cherche le dossier
+    const q = encodeURIComponent(
+      `name='${CLOUD_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
+    );
+    const findRes = await this._api(`drive/v3/files?q=${q}&fields=files(id,name)`);
+    const findData = await findRes.json();
+    if (findData.files && findData.files.length > 0) {
+      return findData.files[0].id;
+    }
+    // Crée
+    const createRes = await this._api('drive/v3/files', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: CLOUD_FOLDER_NAME,
+        mimeType: 'application/vnd.google-apps.folder'
+      })
+    });
+    const created = await createRes.json();
+    return created.id;
+  },
+
+  // Liste les sauvegardes existantes dans le dossier
+  async list() {
+    if (!cloudState.folderId) {
+      cloudState.folderId = await this._findOrCreateFolder();
+    }
+    const q = encodeURIComponent(
+      `'${cloudState.folderId}' in parents and trashed=false and mimeType='application/json'`
+    );
+    const res = await this._api(
+      `drive/v3/files?q=${q}&fields=files(id,name,modifiedTime,size)&orderBy=modifiedTime desc&pageSize=100`
+    );
+    const data = await res.json();
+    return (data.files || []).map(f => ({
+      id: f.id,
+      name: f.name,
+      modifiedTime: f.modifiedTime,
+      size: parseInt(f.size, 10) || 0
+    }));
+  },
+
+  // Upload un JSON dans le dossier (crée ou écrase si même nom)
+  async save(filename, jsonContent) {
+    if (!cloudState.folderId) {
+      cloudState.folderId = await this._findOrCreateFolder();
+    }
+    // Cherche s'il existe déjà
+    const q = encodeURIComponent(
+      `name='${filename}' and '${cloudState.folderId}' in parents and trashed=false`
+    );
+    const findRes = await this._api(`drive/v3/files?q=${q}&fields=files(id)`);
+    const findData = await findRes.json();
+    const existing = findData.files && findData.files[0];
+
+    const metadata = existing
+      ? { name: filename }
+      : { name: filename, parents: [cloudState.folderId] };
+
+    const boundary = '-------carnetsanitaire' + Math.random().toString(36).slice(2);
+    const delim = '\r\n--' + boundary + '\r\n';
+    const closeDelim = '\r\n--' + boundary + '--';
+    const body =
+      delim +
+      'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+      JSON.stringify(metadata) +
+      delim +
+      'Content-Type: application/json\r\n\r\n' +
+      jsonContent +
+      closeDelim;
+
+    const url = existing
+      ? `upload/drive/v3/files/${existing.id}?uploadType=multipart`
+      : `upload/drive/v3/files?uploadType=multipart`;
+    const method = existing ? 'PATCH' : 'POST';
+
+    await this._api(url, {
+      method,
+      headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+      body
+    });
+  },
+
+  async load(fileId) {
+    const res = await this._api(`drive/v3/files/${fileId}?alt=media`);
+    return await res.text();
+  },
+
+  async delete(fileId) {
+    await this._api(`drive/v3/files/${fileId}`, { method: 'DELETE' });
+  }
+};
+
+// Registre des providers
+const CLOUD_PROVIDERS = {
+  'google-drive': GoogleDriveProvider
+};
+
+function getProvider() {
+  return cloudState.provider ? CLOUD_PROVIDERS[cloudState.provider] : null;
+}
+
+/* ----- Logique de sauvegarde + rotation ----- */
+
+function buildBackupPayload() {
+  return JSON.stringify({
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    animaux: state.animaux
+  }, null, 2);
+}
+
+function todayBackupName() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `carnet-${yyyy}-${mm}-${dd}.json`;
+}
+
+function monthlyBackupName() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `carnet-${yyyy}-${mm}-mensuel.json`;
+}
+
+// Sauvegarde immédiate vers le cloud
+async function syncToCloud(silent = false) {
+  const provider = getProvider();
+  if (!provider) return;
+
+  // Si une sauvegarde est déjà en cours, on attend (évite collisions)
+  if (cloudState.status === 'syncing') return;
+
+  cloudState.status = 'syncing';
+  renderCloudBar();
+
+  try {
+    const payload = buildBackupPayload();
+    // Sauvegarde du jour (écrase la précédente du même jour)
+    await provider.save(todayBackupName(), payload);
+
+    // Snapshot mensuel : créé seulement s'il n'existe pas déjà
+    const files = await provider.list();
+    const monthlyName = monthlyBackupName();
+    const hasMonthly = files.some(f => f.name === monthlyName);
+    if (!hasMonthly) {
+      await provider.save(monthlyName, payload);
+    }
+
+    // Rotation : on garde 30 jours quotidiens + 12 mois mensuels
+    await rotateBackups(provider, files);
+
+    cloudState.lastSync = new Date().toISOString();
+    cloudState.status = 'connected';
+    cloudState.errorMessage = null;
+    cloudState.dirty = false; // tout est synchro
+    saveCloudConfig();
+    renderCloudBar();
+    if (!silent) {
+      toast('Sauvegardé sur ' + provider.name, 'success');
+    }
+  } catch (e) {
+    handleCloudError(e, 'Erreur sauvegarde cloud');
+  }
+}
+
+// Détecte si une erreur Cloud signifie "il faut redemander un token interactif"
+// et met l'état cloud en conséquence. Sinon, erreur classique.
+function handleCloudError(e, prefix) {
+  if (e.code === 'NEED_RECONNECT') {
+    cloudState.status = 'needs_reconnect';
+    cloudState.errorMessage = 'Session Google expirée';
+    renderCloudBar();
+    // Pas de toast d'erreur agressif : la barre cloud propose le bouton.
+    return;
+  }
+  cloudState.status = 'error';
+  cloudState.errorMessage = e.message;
+  renderCloudBar();
+  toast(prefix + ' : ' + e.message, 'error');
+}
+
+// Reconnexion explicite : DOIT être appelée depuis un handler de clic
+// utilisateur direct, sinon le navigateur bloque la popup OAuth.
+async function reconnectCloud() {
+  const provider = getProvider();
+  if (!provider) return;
+  try {
+    // Mode interactif demandé : popup directe, déclenchée depuis un clic
+    await provider._ensureToken(true);
+    cloudState.status = 'connected';
+    cloudState.errorMessage = null;
+    renderCloudBar();
+    toast('Reconnecté à ' + provider.name, 'success');
+    // Si on avait des modifs en attente, on les pousse maintenant
+    if (cloudState.dirty) {
+      await syncToCloud(false);
+    }
+  } catch (e) {
+    cloudState.status = 'needs_reconnect';
+    cloudState.errorMessage = 'Reconnexion annulée';
+    renderCloudBar();
+    toast('Reconnexion annulée', 'error');
+  }
+}
+
+async function rotateBackups(provider, files) {
+  // Quotidiens : carnet-YYYY-MM-DD.json
+  const daily = files.filter(f => /^carnet-\d{4}-\d{2}-\d{2}\.json$/.test(f.name))
+                     .sort((a, b) => b.name.localeCompare(a.name));
+  // Mensuels : carnet-YYYY-MM-mensuel.json
+  const monthly = files.filter(f => /^carnet-\d{4}-\d{2}-mensuel\.json$/.test(f.name))
+                       .sort((a, b) => b.name.localeCompare(a.name));
+
+  // Garder 30 quotidiens + 12 mensuels
+  const toDelete = [...daily.slice(30), ...monthly.slice(12)];
+  for (const f of toDelete) {
+    try { await provider.delete(f.id); } catch (e) { /* tolérant */ }
+  }
+}
+
+// Sauvegarde différée (debounce ~30s) déclenchée à chaque modification
+function scheduleAutoSave() {
+  if (!getProvider() || cloudState.status === 'disconnected') return;
+  // SÉCURITÉ : pendant la réconciliation post-connexion, l'utilisateur n'a pas
+  // encore choisi entre garder le local ou restaurer le cloud. On ne planifie
+  // AUCUNE sauvegarde tant qu'il n'a pas tranché.
+  if (cloudState.reconciling) return;
+  cloudState.dirty = true; // marque qu'il y a des modifs non sauvegardées
+  renderCloudBar(); // affiche "modifs en attente"
+  if (cloudState.pendingSaveTimer) clearTimeout(cloudState.pendingSaveTimer);
+  cloudState.pendingSaveTimer = setTimeout(() => {
+    cloudState.pendingSaveTimer = null;
+    syncToCloud(false);
+  }, 30000);
+}
+
+/* ----- Sauvegarde de fermeture ----- */
+// Deux mécanismes complémentaires :
+//  1. visibilitychange : déclenché quand l'onglet passe en arrière-plan
+//     ou que l'app passe en arrière-plan sur mobile. La page est encore vivante,
+//     un fetch normal aboutit. C'est le cas le plus fréquent en pratique.
+//  2. pagehide / beforeunload : la page est en train de se fermer pour de bon.
+//     Les fetch normaux peuvent être annulés. On utilise sendBeacon en dernier
+//     recours, qui est l'API conçue pour ce cas précis.
+
+async function flushCloudSync() {
+  if (!getProvider() || !cloudState.dirty) return;
+  if (cloudState.reconciling) return; // pas de sync tant que la réconciliation n'est pas tranchée
+  if (cloudState.pendingSaveTimer) {
+    clearTimeout(cloudState.pendingSaveTimer);
+    cloudState.pendingSaveTimer = null;
+  }
+  // Sauvegarde normale (la page est encore vivante)
+  await syncToCloud(true);
+}
+
+function flushCloudSyncBeacon() {
+  // Appelée pendant la fermeture : on n'a plus le temps pour un fetch normal.
+  // sendBeacon nous garantit que la requête part même si la page se ferme.
+  if (!cloudState.dirty || !getProvider()) return;
+  if (cloudState.reconciling) return;
+  const provider = getProvider();
+  if (provider.id !== 'google-drive' || !provider.accessToken) return;
+
+  try {
+    const payload = buildBackupPayload();
+    const filename = todayBackupName();
+    const blob = new Blob([payload], { type: 'application/json' });
+
+    // Stratégie : on essaie d'identifier le fichier du jour via une URL qu'on a
+    // déjà en cache (impossible ici), donc on poste un nouveau fichier dans
+    // le dossier. La rotation suivante nettoiera les doublons.
+    // sendBeacon ne supporte pas les headers custom, donc on passe le token
+    // via le paramètre upload_protocol=raw (standard Google).
+    const url = `https://www.googleapis.com/upload/drive/v3/files?uploadType=media&access_token=${encodeURIComponent(provider.accessToken)}`;
+    const ok = navigator.sendBeacon(url, blob);
+    if (ok) {
+      // On ne peut pas savoir si la requête a réussi côté serveur, mais elle
+      // a bien été envoyée par le navigateur. Le toast n'est pas affiché parce
+      // qu'on est en train de fermer la page.
+      cloudState.dirty = false;
+    }
+  } catch (e) {
+    // On ne peut rien afficher, la page se ferme
+    console.warn('Beacon flush échoué:', e);
+  }
+}
+
+// Quand l'onglet devient invisible : sauvegarde préventive (page encore vivante)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && cloudState.dirty) {
+    flushCloudSync();
+  }
+});
+
+// Sauvegarde de dernier recours juste avant fermeture de la page
+window.addEventListener('pagehide', flushCloudSyncBeacon);
+window.addEventListener('beforeunload', (e) => {
+  if (cloudState.dirty && getProvider()) {
+    flushCloudSyncBeacon();
+    // On n'affiche PAS le dialog "Voulez-vous vraiment quitter ?" :
+    // il est mal vu et la sauvegarde est déjà en cours via beacon.
+  }
+});
+
+/* ----- Rendu de la barre de statut cloud ----- */
+
+function renderCloudBar() {
+  const bar = document.getElementById('cloud-bar');
+  const icon = document.getElementById('cloud-icon');
+  const label = document.getElementById('cloud-label');
+  const actions = bar.querySelector('.actions');
+
+  bar.classList.remove('disconnected', 'connected', 'error');
+  actions.innerHTML = '';
+
+  const provider = getProvider();
+
+  if (!provider) {
+    bar.classList.add('disconnected');
+    icon.textContent = '!';
+    label.innerHTML = '<strong>Sauvegarde locale uniquement</strong> — pense à exporter régulièrement';
+    actions.innerHTML = '<button id="cloud-config">Configurer le cloud</button>';
+    actions.querySelector('button').addEventListener('click', openConfigModal);
+    return;
+  }
+
+  if (cloudState.status === 'syncing') {
+    bar.classList.add('connected');
+    icon.textContent = '↻';
+    label.innerHTML = '<span class="syncing"></span><strong>Sauvegarde en cours…</strong>';
+    return;
+  }
+
+  if (cloudState.status === 'needs_reconnect') {
+    // Cas "popup bloquée" ou "session expirée" : on a besoin que l'utilisateur
+    // clique explicitement sur un bouton pour redéclencher la popup OAuth.
+    bar.classList.add('error');
+    icon.textContent = '!';
+    label.innerHTML = `<strong>Reconnexion requise</strong> — ${cloudState.errorMessage || 'session Google expirée'}${cloudState.dirty ? ' · <span style="color:var(--rouge)">modifs non sauvegardées</span>' : ''}`;
+    const reconnectBtn = document.createElement('button');
+    reconnectBtn.textContent = '↻ Reconnecter à ' + provider.name;
+    reconnectBtn.className = 'primary';
+    reconnectBtn.style.cssText = 'background:var(--terre);color:var(--paper);border-color:var(--terre)';
+    reconnectBtn.addEventListener('click', reconnectCloud);
+    actions.appendChild(reconnectBtn);
+    const cfg = document.createElement('button');
+    cfg.textContent = '⚙';
+    cfg.title = 'Réglages';
+    cfg.className = 'ghost';
+    cfg.addEventListener('click', openConfigModal);
+    actions.appendChild(cfg);
+    return;
+  }
+
+  if (cloudState.status === 'error') {
+    bar.classList.add('error');
+    icon.textContent = '✕';
+    label.innerHTML = `<strong>Erreur de sauvegarde</strong> — ${cloudState.errorMessage || 'voir détail'}`;
+    const retry = document.createElement('button');
+    retry.textContent = 'Réessayer';
+    retry.addEventListener('click', () => syncToCloud(false));
+    actions.appendChild(retry);
+    const cfg = document.createElement('button');
+    cfg.textContent = 'Réglages';
+    cfg.className = 'ghost';
+    cfg.addEventListener('click', openConfigModal);
+    actions.appendChild(cfg);
+    return;
+  }
+
+  // Connected
+  bar.classList.add('connected');
+  icon.textContent = cloudState.dirty ? '⋯' : '✓';
+  const since = cloudState.lastSync ? formatRelative(cloudState.lastSync) : 'jamais';
+  if (cloudState.dirty) {
+    label.innerHTML = `<strong>${provider.name}</strong> — modifs en attente <span style="color:var(--ink-3);font-size:11px">(sauvegarde dans 30 s)</span>`;
+  } else {
+    label.innerHTML = `<strong>${provider.name}</strong> — sauvegardé ${since}`;
+  }
+
+  const saveBtn = document.createElement('button');
+  saveBtn.textContent = '⇧ Sauvegarder maintenant';
+  saveBtn.addEventListener('click', () => syncToCloud(false));
+  actions.appendChild(saveBtn);
+
+  const restoreBtn = document.createElement('button');
+  restoreBtn.textContent = '↺ Restaurer';
+  restoreBtn.className = 'ghost';
+  restoreBtn.addEventListener('click', openBackupsModal);
+  actions.appendChild(restoreBtn);
+
+  const cfgBtn = document.createElement('button');
+  cfgBtn.textContent = '⚙';
+  cfgBtn.title = 'Réglages';
+  cfgBtn.className = 'ghost';
+  cfgBtn.addEventListener('click', openConfigModal);
+  actions.appendChild(cfgBtn);
+}
+
+function formatRelative(iso) {
+  const d = new Date(iso);
+  const diff = Date.now() - d.getTime();
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return 'à l\'instant';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `il y a ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `il y a ${h} h`;
+  const days = Math.floor(h / 24);
+  if (days === 1) return 'hier';
+  if (days < 30) return `il y a ${days} j`;
+  return 'le ' + d.toLocaleDateString('fr-FR');
+}
+
+/* ----- Modal de configuration ----- */
+
+function openConfigModal() {
+  const body = document.getElementById('config-body');
+  const provider = getProvider();
+  const driveAvailable = GoogleDriveProvider.isAvailable();
+
+  let html = '<p>Tes données restent privées : chaque éleveur connecte <strong>son propre</strong> compte cloud. Aucun serveur centralisé.</p>';
+
+  // Carte Google Drive
+  html += `<div class="provider-card${driveAvailable ? '' : ' unavailable'}">`;
+  html += '<div class="head">';
+  html += '<div><div class="name">Google Drive</div>';
+  html += '<div class="desc">Sauvegarde dans un dossier dédié de ton Drive personnel</div></div>';
+  if (provider?.id === 'google-drive') {
+    html += '<button id="cloud-disconnect" class="ghost danger">Déconnecter</button>';
+  } else if (driveAvailable) {
+    html += '<button id="cloud-connect-drive" class="primary">Connecter</button>';
+  } else {
+    html += '<span class="badge race">Non configuré</span>';
+  }
+  html += '</div>';
+  if (!driveAvailable) {
+    html += '<div class="info">Cette app n\'a pas encore de Client ID Google configuré. Pour activer Drive, suis les étapes dans les commentaires en haut du fichier source (variable <code>GOOGLE_CLIENT_ID</code>).</div>';
+  } else if (provider?.id === 'google-drive') {
+    html += `<div class="info">✓ Connecté. Sauvegardes dans le dossier <strong>${CLOUD_FOLDER_NAME}</strong> de ton Drive. Rotation automatique : 30 jours quotidiens + 12 mensuels.</div>`;
+  }
+  html += '</div>';
+
+  // Cartes futures (placeholder)
+  html += `<div class="provider-card unavailable">
+    <div class="head">
+      <div><div class="name">Dropbox</div><div class="desc">À venir dans une prochaine version</div></div>
+      <span class="badge race">Bientôt</span>
+    </div>
+  </div>`;
+  html += `<div class="provider-card unavailable">
+    <div class="head">
+      <div><div class="name">OneDrive</div><div class="desc">À venir dans une prochaine version</div></div>
+      <span class="badge race">Bientôt</span>
+    </div>
+  </div>`;
+
+  html += '<div class="info" style="margin-top:18px"><strong>Note :</strong> la sauvegarde manuelle vers fichier (bouton <em>Sauvegarder</em> de la barre d\'outils) reste toujours disponible en complément.</div>';
+
+  body.innerHTML = html;
+
+  // Liaisons
+  const connectBtn = document.getElementById('cloud-connect-drive');
+  if (connectBtn) connectBtn.addEventListener('click', connectGoogleDrive);
+  const disconnectBtn = document.getElementById('cloud-disconnect');
+  if (disconnectBtn) disconnectBtn.addEventListener('click', disconnectCloud);
+
+  document.getElementById('config-modal-bg').classList.add('show');
+}
+
+async function connectGoogleDrive() {
+  try {
+    toast('Ouverture de la fenêtre Google…');
+    await GoogleDriveProvider.connect();
+    cloudState.provider = 'google-drive';
+    cloudState.status = 'connected';
+    saveCloudConfig();
+    document.getElementById('config-modal-bg').classList.remove('show');
+    toast('Google Drive connecté', 'success');
+
+    // SÉCURITÉ : avant toute sauvegarde, on vérifie s'il existe déjà des
+    // sauvegardes sur le Drive. Si oui, on ne touche à RIEN tant que
+    // l'utilisateur n'a pas choisi (restaurer / garder local).
+    await handleConnectionSync();
+  } catch (e) {
+    toast('Connexion impossible : ' + e.message, 'error');
+    // En cas d'erreur, on déconnecte pour ne pas laisser un état incohérent
+    cloudState.provider = null;
+    cloudState.status = 'disconnected';
+    saveCloudConfig();
+    renderCloudBar();
+  }
+}
+
+// Logique de réconciliation à la première connexion
+async function handleConnectionSync() {
+  const provider = getProvider();
+  if (!provider) return;
+
+  let existingBackups = [];
+  try {
+    existingBackups = await provider.list();
+  } catch (e) {
+    handleCloudError(e, 'Impossible de lire le dossier Drive');
+    return;
+  }
+
+  const hasLocal = state.animaux.length > 0;
+  const hasRemote = existingBackups.length > 0;
+
+  // Cas 1 : Drive vide + local vide → première utilisation, rien à faire
+  if (!hasRemote && !hasLocal) {
+    cloudState.lastSync = new Date().toISOString();
+    saveCloudConfig();
+    renderCloudBar();
+    toast('Drive prêt, importe ton CSV pour commencer');
+    return;
+  }
+
+  // Cas 2 : Drive vide + local non vide → premier upload légitime
+  if (!hasRemote && hasLocal) {
+    renderCloudBar();
+    await syncToCloud(false);
+    return;
+  }
+
+  // Cas 3 : Drive non vide + local vide → DANGER, surtout pas écraser
+  // On ouvre la modal de restauration et on bloque toute sauvegarde tant que
+  // l'utilisateur n'a pas choisi.
+  if (hasRemote && !hasLocal) {
+    cloudState.status = 'connected';
+    renderCloudBar();
+    await openRestoreOnConnectModal(existingBackups, false);
+    return;
+  }
+
+  // Cas 4 : Drive non vide + local non vide → conflit, demander à l'utilisateur
+  if (hasRemote && hasLocal) {
+    cloudState.status = 'connected';
+    renderCloudBar();
+    await openRestoreOnConnectModal(existingBackups, true);
+    return;
+  }
+}
+
+// Modal de réconciliation : présente le choix "garder le local" vs "restaurer
+// une sauvegarde du cloud". Tant que l'utilisateur n'a pas choisi, AUCUNE
+// sauvegarde automatique ne part vers le cloud (verrouillé par
+// cloudState.reconciling).
+async function openRestoreOnConnectModal(backups, hasLocalData) {
+  const body = document.getElementById('backups-body');
+  document.getElementById('backups-modal-bg').classList.add('show');
+
+  // Verrouille toute sauvegarde tant que l'utilisateur n'a pas tranché
+  cloudState.reconciling = true;
+  cloudState.dirty = false;
+  if (cloudState.pendingSaveTimer) {
+    clearTimeout(cloudState.pendingSaveTimer);
+    cloudState.pendingSaveTimer = null;
+  }
+
+  const modalHead = document.querySelector('#backups-modal-bg .modal-head h2');
+  modalHead.textContent = 'Sauvegardes trouvées sur Drive';
+
+  let html = '';
+  if (hasLocalData) {
+    html += `<p>Ce navigateur contient déjà <strong>${state.animaux.length} animaux</strong>.<br>
+      Ton Drive contient ${backups.length} sauvegarde(s) existante(s).</p>
+      <div class="info" style="background:rgba(184,131,10,0.1);border-left-color:var(--jaune)">
+        <strong>⚠ Choix important :</strong> que veux-tu garder comme version de référence ?
+      </div>`;
+  } else {
+    html += `<p>Ton Drive contient ${backups.length} sauvegarde(s) existante(s).<br>
+      Cet appareil ne contient aucune donnée locale.</p>
+      <div class="info" style="background:rgba(184,131,10,0.1);border-left-color:var(--jaune)">
+        <strong>Sécurité :</strong> aucune sauvegarde automatique ne partira tant que tu n'auras pas choisi. Sélectionne une sauvegarde à restaurer.
+      </div>`;
+  }
+
+  // Boutons d'action haut niveau
+  html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:14px 0">';
+  if (hasLocalData) {
+    html += '<button id="keep-local" class="primary">Garder mes données locales (et écraser le Drive)</button>';
+  }
+  html += '<button id="cancel-connect" class="ghost danger">Annuler la connexion</button>';
+  html += '</div>';
+
+  // Liste des sauvegardes restaurables
+  html += '<h3 style="margin:18px 0 8px">Ou restaurer une sauvegarde existante :</h3>';
+  html += '<ul class="backup-list">';
+  for (const f of backups) {
+    const isMonthly = f.name.includes('mensuel');
+    const dateStr = new Date(f.modifiedTime).toLocaleString('fr-FR', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit'
+    });
+    const sizeKb = (f.size / 1024).toFixed(1);
+    html += `<li class="backup-item" data-id="${f.id}" data-name="${f.name}">
+      <div class="meta">
+        <div class="name">${f.name}${isMonthly ? ' <span class="tag">Mensuel</span>' : ''}</div>
+        <div class="date">Modifié ${dateStr}</div>
+      </div>
+      <div class="size">${sizeKb} ko</div>
+    </li>`;
+  }
+  html += '</ul>';
+
+  body.innerHTML = html;
+
+  // Liaisons
+  body.querySelectorAll('.backup-item').forEach(item => {
+    item.addEventListener('click', async () => {
+      if (!confirm(`Restaurer "${item.dataset.name}" ?`)) return;
+      try {
+        const text = await getProvider().load(item.dataset.id);
+        const data = JSON.parse(text);
+        if (!data.animaux || !Array.isArray(data.animaux)) {
+          throw new Error('Format invalide');
+        }
+        state.animaux = data.animaux;
+        persistLocalOnly(); // sauvegarde localStorage seulement, sans déclencher scheduleAutoSave
+        render();
+        document.getElementById('backups-modal-bg').classList.remove('show');
+        toast(`${data.animaux.length} animaux restaurés`, 'success');
+        // Réconciliation tranchée : déverrouille les sauvegardes
+        cloudState.reconciling = false;
+        cloudState.lastSync = new Date().toISOString();
+        cloudState.dirty = false;
+        saveCloudConfig();
+        renderCloudBar();
+      } catch (e) {
+        toast('Erreur de restauration : ' + e.message, 'error');
+      }
+    });
+  });
+
+  const keepBtn = document.getElementById('keep-local');
+  if (keepBtn) {
+    keepBtn.addEventListener('click', async () => {
+      if (!confirm('Confirmer ? Les sauvegardes existantes sur Drive seront remplacées par tes données locales.')) return;
+      document.getElementById('backups-modal-bg').classList.remove('show');
+      // Réconciliation tranchée : déverrouille
+      cloudState.reconciling = false;
+      await syncToCloud(false);
+    });
+  }
+
+  document.getElementById('cancel-connect').addEventListener('click', () => {
+    document.getElementById('backups-modal-bg').classList.remove('show');
+    // Déconnecte le cloud pour revenir à l'état antérieur
+    if (getProvider()) getProvider().disconnect();
+    cloudState.provider = null;
+    cloudState.status = 'disconnected';
+    cloudState.lastSync = null;
+    cloudState.dirty = false;
+    cloudState.reconciling = false;
+    saveCloudConfig();
+    renderCloudBar();
+    toast('Connexion annulée');
+  });
+}
+
+// Variante de persist() qui n'envoie PAS la sauvegarde au cloud
+// (utilisée lors de la restauration depuis le cloud, pour éviter une boucle)
+function persistLocalOnly() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      version: 1,
+      savedAt: new Date().toISOString(),
+      animaux: state.animaux
+    }));
+  } catch (e) {
+    toast('Erreur de sauvegarde locale : ' + e.message, 'error');
+  }
+}
+
+function disconnectCloud() {
+  if (!confirm('Déconnecter le cloud ? Les sauvegardes existantes restent sur ton Drive.')) return;
+  const provider = getProvider();
+  if (provider) provider.disconnect();
+  cloudState.provider = null;
+  cloudState.status = 'disconnected';
+  cloudState.lastSync = null;
+  saveCloudConfig();
+  renderCloudBar();
+  document.getElementById('config-modal-bg').classList.remove('show');
+  toast('Cloud déconnecté');
+}
+
+/* ----- Modal de restauration ----- */
+
+async function openBackupsModal() {
+  const body = document.getElementById('backups-body');
+  body.innerHTML = '<p>Chargement de la liste des sauvegardes…</p>';
+  // Remet le titre par défaut (peut avoir été modifié par la modal de réconciliation)
+  document.querySelector('#backups-modal-bg .modal-head h2').textContent = 'Restaurer depuis Drive';
+  document.getElementById('backups-modal-bg').classList.add('show');
+
+  const provider = getProvider();
+  try {
+    const files = await provider.list();
+    if (files.length === 0) {
+      body.innerHTML = '<p>Aucune sauvegarde disponible sur ton Drive pour le moment.</p>';
+      return;
+    }
+    let html = '<p>Sélectionne une sauvegarde à restaurer. <strong>Tes données actuelles seront remplacées</strong>.</p><ul class="backup-list">';
+    for (const f of files) {
+      const isMonthly = f.name.includes('mensuel');
+      const dateStr = new Date(f.modifiedTime).toLocaleString('fr-FR', {
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      });
+      const sizeKb = (f.size / 1024).toFixed(1);
+      html += `<li class="backup-item" data-id="${f.id}" data-name="${f.name}">
+        <div class="meta">
+          <div class="name">${f.name}${isMonthly ? ' <span class="tag">Mensuel</span>' : ''}</div>
+          <div class="date">Modifié ${dateStr}</div>
+        </div>
+        <div class="size">${sizeKb} ko</div>
+      </li>`;
+    }
+    html += '</ul>';
+    body.innerHTML = html;
+    body.querySelectorAll('.backup-item').forEach(item => {
+      item.addEventListener('click', () => restoreFromCloud(item.dataset.id, item.dataset.name));
+    });
+  } catch (e) {
+    if (e.code === 'NEED_RECONNECT') {
+      // Session Google expirée. On affiche un bouton de reconnexion DANS la
+      // modal — son clic sera dans une chaîne d'événements utilisateur valide
+      // donc le navigateur acceptera la popup OAuth.
+      body.innerHTML = `
+        <p>Ta session Google a expiré. Pour voir tes sauvegardes, reconnecte-toi.</p>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button id="modal-reconnect" class="primary" style="background:var(--terre);color:var(--paper);border-color:var(--terre)">↻ Reconnecter à Google Drive</button>
+          <button id="modal-cancel" class="ghost">Annuler</button>
+        </div>`;
+      document.getElementById('modal-reconnect').addEventListener('click', async () => {
+        try {
+          await getProvider()._ensureToken(true);
+          cloudState.status = 'connected';
+          renderCloudBar();
+          // Recharge la liste après reconnexion
+          await openBackupsModal();
+        } catch (err) {
+          body.innerHTML = `<p style="color:var(--rouge)">Reconnexion annulée : ${err.message}</p>`;
+        }
+      });
+      document.getElementById('modal-cancel').addEventListener('click', () => {
+        document.getElementById('backups-modal-bg').classList.remove('show');
+      });
+      // Et on met aussi la barre cloud en mode needs_reconnect
+      cloudState.status = 'needs_reconnect';
+      cloudState.errorMessage = 'Session Google expirée';
+      renderCloudBar();
+    } else {
+      body.innerHTML = `<p style="color:var(--rouge)">Erreur de chargement : ${e.message}</p>`;
+    }
+  }
+}
+
+async function restoreFromCloud(fileId, filename) {
+  if (!confirm(`Restaurer "${filename}" ? Les données actuelles seront remplacées.`)) return;
+  try {
+    const text = await getProvider().load(fileId);
+    const data = JSON.parse(text);
+    if (!data.animaux || !Array.isArray(data.animaux)) {
+      throw new Error('Format invalide');
+    }
+    state.animaux = data.animaux;
+    persistLocalOnly(); // évite une re-sync immédiate vers le cloud
+    render();
+    document.getElementById('backups-modal-bg').classList.remove('show');
+    toast(`${data.animaux.length} animaux restaurés`, 'success');
+    // Marque comme synchronisé : le contenu vient du cloud lui-même
+    cloudState.lastSync = new Date().toISOString();
+    cloudState.dirty = false;
+    saveCloudConfig();
+    renderCloudBar();
+  } catch (e) {
+    if (e.code === 'NEED_RECONNECT') {
+      handleCloudError(e, '');
+      toast('Session Google expirée — reconnecte-toi via la barre cloud', 'error');
+    } else {
+      toast('Erreur de restauration : ' + e.message, 'error');
+    }
+  }
+}
+
+/* ============================================================
+   ÉVÉNEMENTS
+   ============================================================ */
+
+document.getElementById('search').addEventListener('input', (e) => {
+  state.filtres.recherche = e.target.value;
+  render();
+});
+
+['presents', 'femelles', 'males'].forEach(k => {
+  const btn = document.getElementById('filter-' + k);
+  btn.addEventListener('click', () => {
+    state.filtres[k] = !state.filtres[k];
+    btn.setAttribute('aria-pressed', state.filtres[k]);
+    // Femelles/mâles s'excluent
+    if (k === 'femelles' && state.filtres.femelles) {
+      state.filtres.males = false;
+      document.getElementById('filter-males').setAttribute('aria-pressed', false);
+    }
+    if (k === 'males' && state.filtres.males) {
+      state.filtres.femelles = false;
+      document.getElementById('filter-femelles').setAttribute('aria-pressed', false);
+    }
+    render();
+  });
+});
+
+document.querySelectorAll('thead th').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.sort;
+    if (state.tri.col === col) state.tri.asc = !state.tri.asc;
+    else { state.tri.col = col; state.tri.asc = true; }
+    render();
+  });
+});
+
+document.getElementById('import-file').addEventListener('change', (e) => {
+  if (e.target.files[0]) handleImport(e.target.files[0]);
+  e.target.value = '';
+});
+document.getElementById('restore-file').addEventListener('change', (e) => {
+  if (e.target.files[0]) handleRestore(e.target.files[0]);
+  e.target.value = '';
+});
+document.getElementById('export-json').addEventListener('click', exportJSON);
+document.getElementById('reset').addEventListener('click', reset);
+document.getElementById('load-demo').addEventListener('click', loadDemo);
+
+// Menu déroulant ⋮ (Données et sauvegarde)
+const dataMenu = document.getElementById('data-menu');
+const dataMenuBtn = document.getElementById('data-menu-btn');
+function toggleDataMenu(open) {
+  const isOpen = open !== undefined ? open : dataMenu.hidden;
+  dataMenu.hidden = !isOpen;
+  dataMenuBtn.setAttribute('aria-expanded', isOpen);
+}
+dataMenuBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleDataMenu();
+});
+// Fermer le menu en cliquant ailleurs
+document.addEventListener('click', (e) => {
+  if (!dataMenu.hidden && !dataMenu.contains(e.target) && e.target !== dataMenuBtn) {
+    toggleDataMenu(false);
+  }
+});
+// Fermer le menu après clic sur un item
+dataMenu.querySelectorAll('.menu-item').forEach(item => {
+  item.addEventListener('click', () => toggleDataMenu(false));
+});
+
+// Modal d'ajout d'animal
+document.getElementById('add-animal').addEventListener('click', openAddModal);
+document.getElementById('add-close').addEventListener('click', closeAddModal);
+document.getElementById('add-cancel').addEventListener('click', closeAddModal);
+document.getElementById('add-next').addEventListener('click', validateAndNextStep);
+document.getElementById('add-back').addEventListener('click', backToStep1);
+document.getElementById('add-save').addEventListener('click', saveNewAnimal);
+document.getElementById('add-cause-entree').addEventListener('change', onCauseEntreeChange);
+document.getElementById('add-modal-bg').addEventListener('click', (e) => {
+  if (e.target.id === 'add-modal-bg') closeAddModal();
+});
+
+document.getElementById('modal-bg').addEventListener('click', (e) => {
+  if (e.target.id === 'modal-bg') closeModal();
+});
+// Fermeture de la modale "backups" : si on est en mode réconciliation
+// (post-connexion sans choix), une fermeture sans choix annule la connexion.
+function closeBackupsModal() {
+  if (cloudState.reconciling) {
+    // Comportement = annuler la connexion (l'utilisateur n'a pas choisi)
+    document.getElementById('backups-modal-bg').classList.remove('show');
+    if (getProvider()) getProvider().disconnect();
+    cloudState.provider = null;
+    cloudState.status = 'disconnected';
+    cloudState.lastSync = null;
+    cloudState.dirty = false;
+    cloudState.reconciling = false;
+    saveCloudConfig();
+    renderCloudBar();
+    toast('Connexion annulée — aucune donnée modifiée');
+  } else {
+    document.getElementById('backups-modal-bg').classList.remove('show');
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    closeModal();
+    document.getElementById('config-modal-bg').classList.remove('show');
+    closeAddModal();
+    if (document.getElementById('backups-modal-bg').classList.contains('show')) {
+      closeBackupsModal();
+    }
+  }
+});
+
+// Modales cloud (le bouton cloud-config est rebindé dynamiquement par renderCloudBar)
+document.getElementById('config-close').addEventListener('click', () => {
+  document.getElementById('config-modal-bg').classList.remove('show');
+});
+document.getElementById('config-modal-bg').addEventListener('click', (e) => {
+  if (e.target.id === 'config-modal-bg') {
+    document.getElementById('config-modal-bg').classList.remove('show');
+  }
+});
+document.getElementById('backups-close').addEventListener('click', closeBackupsModal);
+document.getElementById('backups-modal-bg').addEventListener('click', (e) => {
+  if (e.target.id === 'backups-modal-bg') {
+    closeBackupsModal();
+  }
+});
+
+/* ============================================================
+   INIT
+   ============================================================ */
+
+load();
+loadCloudConfig();
+render();
+renderCloudBar();
+
+// Reconnexion au démarrage si on était précédemment connecté.
+//
+// Stratégie : on s'appuie UNIQUEMENT sur le token persisté en localStorage.
+// La requête OAuth silencieuse via Google Identity Services (prompt: 'none') est
+// systématiquement bloquée par la politique Cross-Origin-Opener-Policy de
+// GitHub Pages — elle a été désactivée car contre-productive.
+//
+//   • Token cache valide (< 1h) → connexion immédiate sans aucun appel réseau
+//   • Token absent ou expiré → état "needs_reconnect" avec bouton visible
+//
+// Conséquence pratique : popup OAuth nécessaire au maximum 1× par heure.
+// Tant que le token est en cache, F5 / fermer-rouvrir onglet / fermer-rouvrir
+// navigateur sont totalement transparents.
+function reconnectFromCache() {
+  const provider = getProvider();
+  if (!provider) return;
+
+  if (provider._loadPersistedToken && provider._loadPersistedToken()) {
+    cloudState.status = 'connected';
+    renderCloudBar();
+    return;
+  }
+  // Pas de token valide en cache : on attend une action utilisateur explicite
+  cloudState.status = 'needs_reconnect';
+  cloudState.errorMessage = 'Session expirée — clique pour reconnecter';
+  renderCloudBar();
+}
+
+reconnectFromCache();
+
+// Rafraîchit l'horodatage relatif toutes les 60s
+setInterval(() => {
+  if (cloudState.status === 'connected') renderCloudBar();
+}, 60000);
+</script>
+</body>
+</html>
